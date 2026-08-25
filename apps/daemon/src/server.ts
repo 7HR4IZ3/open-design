@@ -244,6 +244,7 @@ import {
   resolveModelForServiceTier,
 } from './runtimes/models.js';
 import { loadMmdRouteLaunchEnv } from './runtimes/mmd-routes.js';
+import { withAcpHandshakeFailureGuidance } from './runtimes/acp-handshake-failure.js';
 import { preflightCodexDefaultModel } from './runtimes/codex-model-preflight.js';
 import { preparePromptFileForAgent } from './runtimes/prompt-file.js';
 import { TerminalControlSequenceStripper } from './runtimes/terminal-control.js';
@@ -2500,7 +2501,29 @@ function rewriteKnownAgentStreamError(agentId, message, failureText = '') {
   ) {
     return 'The run failed due to an unknown upstream streaming error. Please retry.';
   }
+  // An ACP handshake refusal that reaches one of the stderr-tail fallbacks is
+  // deliberately NOT reworded here. The daemon has no locale, so a sentence
+  // composed at this layer lands in `run.error` untranslated and the chat
+  // renders it verbatim. The failure is NAMED instead: each `send('error', …)`
+  // below wraps its payload in `withAcpHandshakeFailureGuidance`, which stamps
+  // `AGENT_CLI_SESSION_REFUSED` plus the runtime identity and leaves the
+  // agent's own line alone.
   return rawMessage;
+}
+
+/**
+ * The runtime identity a failure ships as structured data: the runtime's
+ * display name, which is the one fact the localized copy interpolates.
+ *
+ * Read straight off the already-resolved `RuntimeAgentDef` — a pure lookup on
+ * a value this run resolved before it spawned, so naming the failure adds no
+ * work and no waiting to the failure path.
+ *
+ * @param def - The resolved `RuntimeAgentDef` for this run.
+ * @returns An `AcpAgentIdentity`, with `null` when the runtime is unknown.
+ */
+function agentFailureIdentity(def) {
+  return { agentName: def?.name ?? null };
 }
 
 function createAmrModelUnavailablePayload(model, init = {}) {
@@ -13911,9 +13934,12 @@ export async function startServer({
           }));
           return;
         }
-        send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', agentStreamError, {
-          details: ev.raw ? { raw: ev.raw } : undefined,
-        }));
+        send('error', withAcpHandshakeFailureGuidance(
+          createSseErrorPayload('AGENT_EXECUTION_FAILED', agentStreamError, {
+            details: ev.raw ? { raw: ev.raw } : undefined,
+          }),
+          agentFailureIdentity(def),
+        ));
         return;
       }
       // First well-formed decoded stream event = CLI ready for the
@@ -14067,16 +14093,19 @@ export async function startServer({
               ?? rewriteKnownAgentStreamError(agentId, message, failureText);
           agentStreamErrorObservedBeforeCancellation = true;
           run.runtimeFailureObservedBeforeCancellation = true;
-          send('error', createSseErrorPayload(
-            structuredCode ?? diagnostic?.code ?? serviceCode ?? 'AGENT_EXECUTION_FAILED',
-            agentStreamError,
-            {
-              retryable: structuredCode
-                ? false
-                : diagnostic?.retryable
-                  ?? (serviceCode === 'AGENT_AUTH_REQUIRED' || serviceCode === 'RATE_LIMITED'),
-              ...(diagnostic ? { details: { detail: diagnostic.detail } } : {}),
-            },
+          send('error', withAcpHandshakeFailureGuidance(
+            createSseErrorPayload(
+              structuredCode ?? diagnostic?.code ?? serviceCode ?? 'AGENT_EXECUTION_FAILED',
+              agentStreamError,
+              {
+                retryable: structuredCode
+                  ? false
+                  : diagnostic?.retryable
+                    ?? (serviceCode === 'AGENT_AUTH_REQUIRED' || serviceCode === 'RATE_LIMITED'),
+                ...(diagnostic ? { details: { detail: diagnostic.detail } } : {}),
+              },
+            ),
+            agentFailureIdentity(def),
           ));
           return;
         }
@@ -14354,9 +14383,21 @@ export async function startServer({
           if (event === 'agent') {
             noteFirstTokenFromAgentEvent(data);
             emitAgentEvent(data);
-          } else {
-            send(event, data);
+            return;
           }
+          if (event === 'error') {
+            // This payload is the whole user-visible surface of an ACP failure:
+            // `send` streams it to SSE clients and `design.runs.emit` reads
+            // `run.error` out of it, and the close handler below returns on
+            // `hasFatalError()` before any later rewrite can run. Explain a
+            // handshake rejection here or nowhere.
+            send(event, withAcpHandshakeFailureGuidance(
+              data,
+              agentFailureIdentity(def),
+            ));
+            return;
+          }
+          send(event, data);
         },
         ...(acpStageTimeoutMs !== undefined ? { stageTimeoutMs: acpStageTimeoutMs } : {}),
       });
@@ -14994,10 +15035,13 @@ export async function startServer({
               `${agentStderrTail}\n${agentStdoutTail}`,
             );
             if (rewritten !== 'Agent stream error') {
-              send('error', createSseErrorPayload(
-                'AGENT_EXECUTION_FAILED',
-                rewritten,
-                { retryable: true },
+              send('error', withAcpHandshakeFailureGuidance(
+                createSseErrorPayload(
+                  'AGENT_EXECUTION_FAILED',
+                  rewritten,
+                  { retryable: true },
+                ),
+                agentFailureIdentity(def),
               ));
             }
           }

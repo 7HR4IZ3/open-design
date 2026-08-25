@@ -1,11 +1,8 @@
-// The limited-time 「Unlimited」 promise on the public Pricing page cannot
-// import the workbench's AMR model-id table. Keep the campaign's display names
-// mapped here and verify that each advertised model is actually unlimited for
-// every Individual tier. Pricing intentionally advertises only the active
-// campaign models, while the workbench may contain additional entitlements.
-//
-// The name ↔ id map below is the only translation layer; adding a popular model
-// means adding it here too.
+// Pricing keeps a static marketing snapshot of the campaign models it advertises.
+// The workbench no longer duplicates those sets: it reads Vela's authenticated
+// Coding Plan model endpoint at runtime. This test therefore validates the
+// Pricing snapshot internally without turning it back into a runtime source of
+// truth.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +12,6 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 
 const PRICING_PAGE = `${repoRoot}apps/landing-page/app/_components/pricing-individual-plans.astro`;
-const RUNTIME_TABLE = `${repoRoot}apps/web/src/runtime/amr-unlimited-models.ts`;
 
 /** Pricing display name → the AMR model id the workbench receives. */
 const MODEL_ID_BY_DISPLAY_NAME: Record<string, string> = {
@@ -29,9 +25,6 @@ const MODEL_ID_BY_DISPLAY_NAME: Record<string, string> = {
   'MiMo V2.5 Pro': 'mimo-v2.5-pro',
   'MiniMax M2.7': 'minimax-m2.7',
 };
-
-const TIERS = ['go', 'plus', 'pro', 'max'] as const;
-type Tier = (typeof TIERS)[number];
 
 /** Prose in a comment ("Pro's fifth slot…") carries apostrophes that the
  *  quote-scanning below would read as model names, so comments come out first. */
@@ -52,15 +45,6 @@ function captureOne(source: string, pattern: RegExp, what: string): string {
 function captureAll(source: string, pattern: RegExp): string[] {
   return [...source.matchAll(pattern)].flatMap((match) =>
     match[1] === undefined ? [] : [match[1]],
-  );
-}
-
-/** The `tier: …` entry inside an object literal body, up to the next entry. */
-function tierEntry(body: string, tier: Tier, what: string): string {
-  return captureOne(
-    body,
-    new RegExp(`\\n  ${tier}: ([\\s\\S]*?),(?=\\n  [a-z]+:|$)`),
-    `tier ${tier} in ${what}`,
   );
 }
 
@@ -90,60 +74,7 @@ async function pricingCampaignUnlimitedIds(): Promise<string[]> {
   });
 }
 
-/** The workbench's own table, read as source so this guard stays dependency-free. */
-async function runtimeUnlimitedIdsByTier(): Promise<Record<Tier, string[]>> {
-  const source = stripLineComments(await readFile(RUNTIME_TABLE, 'utf8'));
-
-  // `const PLUS_UNLIMITED_MODELS = [...GO_UNLIMITED_MODELS, 'kimi-k2.7-code']`
-  // — each list may spread an earlier one, so they resolve in declaration
-  // order and a spread is replaced by what it names.
-  const lists = new Map<string, string[]>();
-  for (const match of source.matchAll(
-    /const (\w+_UNLIMITED_MODELS) = \[([\s\S]*?)\] as const;/g,
-  )) {
-    const name = match[1];
-    const body = match[2];
-    if (name === undefined || body === undefined) continue;
-    const models: string[] = [];
-    for (const entry of body.split(',')) {
-      const spread = entry.match(/\.\.\.(\w+_UNLIMITED_MODELS)/)?.[1];
-      if (spread) {
-        models.push(...(lists.get(spread) ?? []));
-        continue;
-      }
-      models.push(...captureAll(entry, /'([^']+)'/g));
-    }
-    lists.set(name, models);
-  }
-
-  const body = captureOne(
-    source,
-    /const UNLIMITED_MODELS_BY_PLAN[^=]*= \{([\s\S]*?)\n\};/,
-    'UNLIMITED_MODELS_BY_PLAN in the runtime table',
-  );
-  const out = {} as Record<Tier, string[]>;
-  for (const tier of TIERS) {
-    const listName = captureOne(
-      body,
-      new RegExp(`\\n  ${tier}: new Set\\((\\w+_UNLIMITED_MODELS)\\)`),
-      `tier ${tier} in UNLIMITED_MODELS_BY_PLAN`,
-    );
-    const models = lists.get(listName);
-    if (models === undefined) {
-      throw new Error(`${listName} is referenced but never declared`);
-    }
-    out[tier] = models;
-  }
-  return out;
-}
-
-describe('Pricing campaign models stay unlimited in the workbench', () => {
-  it.each(TIERS)('is available on %s', async (tier) => {
-    const pricing = await pricingCampaignUnlimitedIds();
-    const runtime = await runtimeUnlimitedIdsByTier();
-    expect(runtime[tier]).toEqual(expect.arrayContaining(pricing));
-  });
-
+describe('Pricing unlimited-model snapshot', () => {
   it('advertises only the two active DeepSeek campaign models', async () => {
     expect(await pricingCampaignUnlimitedIds()).toEqual([
       'deepseek-v4-pro',

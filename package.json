@@ -12,7 +12,7 @@
   "scripts": {
     "postinstall": "node ./scripts/postinstall.mjs",
     "bootstrap": "node ./scripts/postinstall.mjs",
-    "build:vercel": "OD_WEB_OUTPUT_MODE= pnpm --filter @open-design/web build",
+    "build:vercel": "OD_WEB_OUTPUT_MODE=server pnpm --filter @open-design/web build",
     "tools-dev": "pnpm exec tools-dev",
     "tools-pack": "pnpm exec tools-pack",
     "tools-release": "pnpm exec tools-release",

@@ -1242,6 +1242,38 @@ export async function listProjectRuns(
   }
 }
 
+/**
+ * Lists active runs for one project. Supplying the project id is important for
+ * Workspace-bound projects: the daemon intentionally rejects an unscoped
+ * all-project run listing, while a project-scoped request can be authorized
+ * against that project's exact Workspace identity.
+ *
+ * `null` means the request failed. Callers that display background activity
+ * should preserve their last known value on that path instead of treating a
+ * transient auth/network outage as proof that the run finished.
+ */
+export async function listActiveProjectRuns(
+  projectId: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): Promise<ChatRunStatusResponse[] | null> {
+  try {
+    const qs = new URLSearchParams({
+      projectId,
+      status: 'active',
+    });
+    const resp = await fetch(`/api/runs?${qs.toString()}`, {
+      ...(workspaceContext
+        ? { headers: workspaceProjectHeaders(workspaceContext) }
+        : {}),
+    });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as ChatRunListResponse;
+    return body.runs ?? [];
+  } catch {
+    return null;
+  }
+}
+
 interface DaemonPhysicalRunResult {
   nextRunId?: string;
   strategyTask?: StrategyTaskProjectionV2;

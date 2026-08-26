@@ -13,19 +13,26 @@ export interface RequestWithOriginHeaders {
 }
 
 export function configuredAllowedOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = env.OD_ALLOWED_ORIGINS || '';
-  if (!raw.trim()) return [];
-  return raw
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-    .map((origin) => {
-      const parsed = new URL(origin);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new Error('OD_ALLOWED_ORIGINS only supports http:// and https:// origins');
-      }
-      return parsed.origin;
-    });
+  // OD_PUBLIC_BASE_URL is used by cloud deployments for callback URLs. Render
+  // also exposes RENDER_EXTERNAL_URL automatically. Treating either as an
+  // exact origin lets the browser-visible HTTPS origin pass validation even
+  // though the daemon listens on its internal port (normally 7456).
+  const rawOrigins = [env.OD_ALLOWED_ORIGINS, env.OD_PUBLIC_BASE_URL, env.RENDER_EXTERNAL_URL]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .flatMap((value) => value.split(','));
+  const origins = new Set<string>();
+  for (const rawOrigin of rawOrigins) {
+    const origin = rawOrigin.trim();
+    if (!origin) continue;
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(
+        'OD_ALLOWED_ORIGINS, OD_PUBLIC_BASE_URL, and RENDER_EXTERNAL_URL only support http:// and https:// origins',
+      );
+    }
+    origins.add(parsed.origin);
+  }
+  return [...origins];
 }
 
 export function configuredAllowedHosts(origins = configuredAllowedOrigins()): string[] {

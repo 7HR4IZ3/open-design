@@ -330,26 +330,10 @@ test('codex args keep plugins enabled when OD_CODEX_DISABLE_PLUGINS is not 1', (
   });
 });
 
-test('codex model picker includes current OpenAI choices in priority order', async () => {
-  const expectedModels = [
-    'default',
-    'gpt-5.5',
-    'gpt-5.4',
-    'gpt-5.4-mini',
-    'gpt-5.3-codex',
-    'gpt-5.1',
-    'gpt-5.1-codex-mini',
-    'gpt-5-codex',
-    'gpt-5',
-    'o3',
-    'o4-mini',
-  ];
+test('codex model picker falls back to the configured CLI default only', async () => {
+  const expectedModels = ['default'];
 
   assert.deepEqual(codex.fallbackModels.map((m) => m.id), expectedModels);
-  assert.deepEqual(
-    codex.fallbackModels.find((m) => m.id === 'gpt-5.5')?.serviceTierOptions,
-    [{ id: 'priority', label: 'Fast' }],
-  );
   assert.ok(codex.reasoningOptions, 'codex must define reasoningOptions');
   assert.deepEqual(codex.reasoningOptions.map((o) => o.id), [
     'default',
@@ -460,7 +444,7 @@ test('codex preserves explicit live service tiers from debug models JSON', () =>
   ]);
 });
 
-test('codex live model metadata falls back to static service tiers', async () => {
+test('codex live model metadata does not invent service tiers', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-agents-codex-live-tier-'));
   try {
     await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'CODEX_BIN'], async () => {
@@ -486,8 +470,11 @@ exit 2
       const detected = agents.find((agent) => agent.id === 'codex');
       const model = detected?.models.find((m: { id: string }) => m.id === 'gpt-5.5');
 
-      assert.deepEqual(model?.serviceTierOptions, [{ id: 'priority', label: 'Fast' }]);
-      assert.equal(isKnownServiceTier(codex, 'gpt-5.5', 'priority'), true);
+      assert.deepEqual(model, {
+        id: 'gpt-5.5',
+        label: 'GPT 5.5',
+      });
+      assert.equal(isKnownServiceTier(codex, 'gpt-5.5', 'priority'), false);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -770,7 +757,7 @@ exit 2
   }
 });
 
-test('codex detection enriches sparse live GPT-5.5 metadata from fallback tiers', async () => {
+test('codex does not invent service tiers when the live catalog omits them', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-agents-codex-sparse-live-models-'));
   try {
     await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'CODEX_BIN'], async () => {
@@ -801,21 +788,35 @@ exit 2
       assert.deepEqual(gpt55, {
         id: 'gpt-5.5',
         label: 'GPT-5.5',
-        additionalSpeedTiers: ['fast'],
-        serviceTierOptions: [{ id: 'priority', label: 'Fast' }],
       });
-      assert.equal(isKnownServiceTier(codex, 'gpt-5.5', 'priority'), true);
+      assert.equal(isKnownServiceTier(codex, 'gpt-5.5', 'priority'), false);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('codex picker includes gpt-5.1 model family', () => {
-  const pickerModels = new Set(codex.fallbackModels.map((model) => model.id));
+test('codex fetches the bundled catalog when the account refresh fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-agents-codex-bundled-models-'));
+  try {
+    const codexBin = join(dir, 'codex');
+    writeFileSync(
+      codexBin,
+      `#!/bin/sh
+if [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
+  printf '%s\\n' '{"models":[{"slug":"bundled-codex","display_name":"Bundled Codex","visibility":"list"}]}'
+  exit 0
+fi
+exit 1
+`,
+    );
+    chmodSync(codexBin, 0o755);
 
-  assert.equal(pickerModels.has('gpt-5.1'), true);
-  assert.equal(pickerModels.has('gpt-5.1-codex-mini'), true);
+    const models = await codex.fetchModels?.(codexBin, {});
+    assert.deepEqual(models?.map((model) => model.id), ['default', 'bundled-codex']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('cursor-agent parses live model ids separately from display labels', () => {

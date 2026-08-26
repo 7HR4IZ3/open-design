@@ -617,6 +617,7 @@ export function EntryShell({
     amrLoggedIn,
     amrSessionState,
   );
+  const amrAvailable = agents.some((agent) => agent.id === 'amr' && agent.available);
   const railWorkspaceContext = accountFooterState === 'sign-in'
     ? null
     : workspaceContext;
@@ -641,7 +642,7 @@ export function EntryShell({
     accountFooterNotice = <RailAccountSyncTip />;
   } else if (accountFooterState === 'recovering') {
     accountFooterNotice = <RailAccountRecoveryTip />;
-  } else if (accountFooterState === 'sign-in') {
+  } else if (accountFooterState === 'sign-in' && amrAvailable) {
     accountFooterNotice = <CloudSignInTip />;
   }
   const workspaceContextRef = useRef(workspaceContext);
@@ -2190,6 +2191,10 @@ function OnboardingView({
     (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
   );
   const visibleAgents = candidateCliAgents.filter((agent) => visibleAgentIds.includes(agent.id));
+  const amrAvailable = agents.some((agent) => agent.id === 'amr' && agent.available);
+  const localAgentAvailable = agents.some(
+    (agent) => agent.id !== 'amr' && agent.available,
+  );
   const amrSignedIn = isAmrSessionAuthenticated(amrStatus);
   const selectedAgent = visibleAgents.find((agent) => agent.id === config.agentId) ?? null;
   const selectedAgentChoice = selectedAgent ? (config.agentModels?.[selectedAgent.id] ?? {}) : {};
@@ -2271,6 +2276,21 @@ function OnboardingView({
   }, []);
 
   useEffect(() => {
+    // The cloud landing page is only actionable when the AMR/Vela runtime is
+    // installed. A self-hosted image with Codex/OpenCode but no private Vela
+    // binary should go straight to local-agent setup instead of presenting a
+    // button that can only fail with "vela binary not found".
+    if (step !== 0 || agentsLoading || amrAvailable) return;
+    setModelSource(localAgentAvailable ? 'local' : 'byok');
+    if (localAgentAvailable) {
+      beginCliScan({ clearVisible: false });
+      setStep(2);
+    } else {
+      setStep(1);
+    }
+  }, [agentsLoading, amrAvailable, localAgentAvailable, step]);
+
+  useEffect(() => {
     if (runtime !== 'local') return;
     const scanToken = cliScanTokenRef.current;
     if (cliRefreshPendingTokenRef.current === scanToken) return;
@@ -2303,6 +2323,11 @@ function OnboardingView({
   useEffect(() => {
     // Fetch login status on mount in parallel with agent discovery so the
     // landing CTA settles quickly for already-authenticated users.
+    if (agentsLoading) return;
+    if (!amrAvailable) {
+      setAmrStatusResolved(true);
+      return;
+    }
     let cancelled = false;
     void fetchVelaLoginStatus()
       .then((next) => {
@@ -2317,7 +2342,7 @@ function OnboardingView({
     return () => {
       cancelled = true;
     };
-  }, [onAmrLoginStatusChange]);
+  }, [agentsLoading, amrAvailable, onAmrLoginStatusChange]);
 
   useEffect(() => {
     if (
@@ -2651,7 +2676,9 @@ function OnboardingView({
     event: ReactKeyboardEvent<HTMLButtonElement>,
     currentSource: 'amr' | 'local' | 'byok',
   ): void {
-    const sources = ['amr', 'local', 'byok'] as const;
+    const sources: Array<'amr' | 'local' | 'byok'> = amrAvailable
+      ? ['amr', 'local', 'byok']
+      : ['local', 'byok'];
     const currentIndex = sources.indexOf(currentSource);
     let nextIndex: number | null = null;
 
@@ -3279,8 +3306,9 @@ function OnboardingView({
 
   const primaryActionLabel = t('settings.onboardingContinue');
 
-  // Step 1 is identity only: every user signs into OpenDesign Cloud before
-  // choosing Hosted, Local, or BYOK on the next screen.
+  // When AMR/Vela is available, step 1 is identity only: users sign into
+  // OpenDesign Cloud before choosing Hosted, Local, or BYOK. Local-only
+  // deployments bypass this step above when no Vela binary is present.
   if (step === 0) {
     const cloudBusy = amrLoginPending;
     const amrStatusResolving = !amrStatusResolved;
@@ -3410,38 +3438,40 @@ function OnboardingView({
               role="radiogroup"
               aria-label={t('settings.onboardingExecutionTitle')}
             >
-              <Button
-                ref={(node) => {
-                  modelSourceOptionRefs.current.amr = node;
-                }}
-                variant="subtle"
-                role="radio"
-                aria-checked={modelSource === 'amr'}
-                tabIndex={modelSource === 'amr' ? 0 : -1}
-                className={`${onboardingSourceStyles.option} ${
-                  onboardingSourceStyles.hostedOption
-                } ${modelSource === 'amr' ? onboardingSourceStyles.optionActive : ''}`}
-                onClick={() => setModelSource('amr')}
-                onKeyDown={(event) => handleModelSourceKeyDown(event, 'amr')}
-              >
-                <span className={onboardingSourceStyles.optionIcon}>
-                  <Icon name="sparkles" size={17} />
-                </span>
-                <span className={onboardingSourceStyles.optionCopy}>
-                  <span className={onboardingSourceStyles.optionHeading}>
-                    <strong className={onboardingSourceStyles.optionTitle}>
-                      {t('settings.onboardingAmrModelSourceLabel')}
-                    </strong>
-                    <span className={onboardingSourceStyles.recommendedBadge}>
-                      {t('settings.onboardingRecommended')}
+              {amrAvailable ? (
+                <Button
+                  ref={(node) => {
+                    modelSourceOptionRefs.current.amr = node;
+                  }}
+                  variant="subtle"
+                  role="radio"
+                  aria-checked={modelSource === 'amr'}
+                  tabIndex={modelSource === 'amr' ? 0 : -1}
+                  className={`${onboardingSourceStyles.option} ${
+                    onboardingSourceStyles.hostedOption
+                  } ${modelSource === 'amr' ? onboardingSourceStyles.optionActive : ''}`}
+                  onClick={() => setModelSource('amr')}
+                  onKeyDown={(event) => handleModelSourceKeyDown(event, 'amr')}
+                >
+                  <span className={onboardingSourceStyles.optionIcon}>
+                    <Icon name="sparkles" size={17} />
+                  </span>
+                  <span className={onboardingSourceStyles.optionCopy}>
+                    <span className={onboardingSourceStyles.optionHeading}>
+                      <strong className={onboardingSourceStyles.optionTitle}>
+                        {t('settings.onboardingAmrModelSourceLabel')}
+                      </strong>
+                      <span className={onboardingSourceStyles.recommendedBadge}>
+                        {t('settings.onboardingRecommended')}
+                      </span>
+                    </span>
+                    <span className={onboardingSourceStyles.optionBody}>
+                      {t('settings.onboardingAmrCloudBenefitModels')}
                     </span>
                   </span>
-                  <span className={onboardingSourceStyles.optionBody}>
-                    {t('settings.onboardingAmrCloudBenefitModels')}
-                  </span>
-                </span>
-                <span className={onboardingSourceStyles.radio} aria-hidden="true" />
-              </Button>
+                  <span className={onboardingSourceStyles.radio} aria-hidden="true" />
+                </Button>
+              ) : null}
               <Button
                 ref={(node) => {
                   modelSourceOptionRefs.current.local = node;

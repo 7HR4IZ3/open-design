@@ -30,6 +30,13 @@ import {
 import { homeHeroChipLabel } from './home-hero/chip-labels';
 import { useGlideIndicator } from '../hooks/useGlideIndicator';
 import { useLiquidGlass } from '../hooks/useLiquidGlass';
+import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
+import {
+  RUNS_CHANGED_EVENT,
+  listActiveProjectRuns,
+} from '../providers/daemon';
+import { activeRunCountsByProject } from '../state/project-run-activity';
+import type { WorkspaceCollabContext } from '@open-design/contracts';
 
 type WorkspaceChromeTab =
   | {
@@ -115,6 +122,10 @@ interface Props {
    * tab without exposing those tabs in another scope.
    */
   identityScopeKey?: string | null;
+  /** Enables background-run reconciliation for open project tabs. */
+  daemonLive?: boolean;
+  /** Exact Workspace authority used to authorize project-scoped run reads. */
+  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 const STORAGE_KEY = 'open-design:workspace-tabs:v1';
@@ -123,6 +134,14 @@ const REMOVE_WORKSPACE_PROJECT_TABS_EVENT = 'open-design:workspace-tabs:remove-p
 const MAX_PERSISTED_TAB_SCOPES = 12;
 const TAB_DRAG_HAPTIC_MS = 8;
 const TAB_DROP_HAPTIC_MS = 12;
+
+function activeRunLabelForCount(count: number): string {
+  return String(count) + ' active run' + (count === 1 ? '' : 's');
+}
+
+function activeRunTestIdForProject(projectId: string): string {
+  return 'workspace-tab-activity-' + projectId;
+}
 
 function consumeWorkspaceTabShortcut(event: KeyboardEvent) {
   event.preventDefault();
@@ -663,6 +682,8 @@ export function WorkspaceTabsBar({
   activeProjectWorkspaceId,
   onboardingCompleted = false,
   identityScopeKey,
+  daemonLive = false,
+  workspaceContext = null,
 }: Props) {
   const t = useT();
   const [persistedTabsStore] = useState(readPersistedTabsStore);
@@ -681,6 +702,7 @@ export function WorkspaceTabsBar({
   } | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const [activeRunCounts, setActiveRunCounts] = useState<Record<string, number>>({});
   // #5517 corner fan: the "+" button opens a corner-anchored radial menu of
   // template wedges instead of immediately spawning a home tab.
   const [radialMenu, setRadialMenu] = useState<{ x: number; y: number } | null>(null);
@@ -841,6 +863,70 @@ export function WorkspaceTabsBar({
     () => new Map(projects.map((project) => [project.id, project])),
     [projects],
   );
+
+  const openProjectIds = useMemo(
+    () => state.tabs
+      .filter((tab): tab is Extract<WorkspaceChromeTab, { kind: 'project' }> => tab.kind === 'project')
+      .map((tab) => tab.projectId),
+    [state.tabs],
+  );
+  const openProjectIdsKey = openProjectIds.join('|');
+  const workspaceRunScopeKey = workspaceIdentityCacheKey(workspaceContext);
+  const openProjectIdsRef = useRef(openProjectIds);
+  openProjectIdsRef.current = openProjectIds;
+  const workspaceContextRef = useRef(workspaceContext);
+  workspaceContextRef.current = workspaceContext;
+
+  // ProjectView intentionally unmounts when another project tab is selected,
+  // but the daemon run must continue. Reconcile each open project directly so
+  // the picker remains truthful even when no ProjectView for that project is
+  // mounted and even when a Workspace-bound project cannot use an all-project
+  // run listing.
+  useEffect(() => {
+    if (!daemonLive || openProjectIdsRef.current.length === 0) {
+      setActiveRunCounts({});
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      const results = await Promise.all(
+        openProjectIdsRef.current.map(async (projectId) => ({
+          projectId,
+          runs: await listActiveProjectRuns(projectId, workspaceContextRef.current),
+        })),
+      );
+      if (cancelled) return;
+      setActiveRunCounts((previous) => {
+        const next: Record<string, number> = {};
+        for (const result of results) {
+          if (result.runs === null) {
+            const previousCount = previous[result.projectId];
+            if (previousCount) next[result.projectId] = previousCount;
+            continue;
+          }
+          const count = activeRunCountsByProject(result.runs)[result.projectId] ?? 0;
+          if (count > 0) next[result.projectId] = count;
+        }
+        return next;
+      });
+    };
+    const onRunsChanged = () => {
+      void refresh();
+    };
+    void refresh();
+    window.addEventListener(RUNS_CHANGED_EVENT, onRunsChanged);
+    const interval = window.setInterval(refresh, 2000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(RUNS_CHANGED_EVENT, onRunsChanged);
+      window.clearInterval(interval);
+    };
+  }, [
+    daemonLive,
+    openProjectIdsKey,
+    workspaceRunScopeKey,
+    identityScopeKey,
+  ]);
 
   // Project-route dock (workspaceTabsDock.ts): when ProjectView registers a
   // dock element at the top of the chat column, the strip portals there and
@@ -1622,6 +1708,15 @@ export function WorkspaceTabsBar({
     const projectTabs = state.tabs
       .filter((tab) => tab.kind !== 'entry')
       .sort((a, b) => mruRank(a) - mruRank(b));
+    const activeTabRunCount = activeTab.kind === 'project'
+      ? activeRunCounts[activeTab.projectId] ?? 0
+      : 0;
+    const activeTabRunLabel = activeTabRunCount > 0
+      ? activeRunLabelForCount(activeTabRunCount)
+      : null;
+    const activeTabRunTestId = activeTab.kind === 'project'
+      ? activeRunTestIdForProject(activeTab.projectId)
+      : null;
     return (
       <div className="workspace-tabs-dropdown" data-testid="workspace-tabs-dropdown">
         <button
@@ -1636,6 +1731,14 @@ export function WorkspaceTabsBar({
             <Icon name={isEntryActive ? 'home' : activeDisplay.icon} size={14} />
           </span>
           <span className="workspace-tabs-dropdown__label">{activeDisplay.title}</span>
+          {activeTabRunLabel && activeTabRunTestId ? (
+            <span
+              className="workspace-tab__activity-dot"
+              aria-label={activeTabRunLabel}
+              title={activeTabRunLabel}
+              data-testid={activeTabRunTestId}
+            />
+          ) : null}
           <Icon name="chevron-down" size={14} />
         </button>
         {dockMenuOpen ? (
@@ -1650,10 +1753,22 @@ export function WorkspaceTabsBar({
                   displayTabById.get(tab.id)
                     ?? displayTabFor(tab, projectById, t, knownProjectNamesRef.current);
                 const active = tab.id === state.activeTabId;
+                const activeRunCount = tab.kind === 'project'
+                  ? activeRunCounts[tab.projectId] ?? 0
+                  : 0;
+                const runLabel = activeRunCount > 0
+                  ? activeRunLabelForCount(activeRunCount)
+                  : null;
+                const runTestId = tab.kind === 'project'
+                  ? activeRunTestIdForProject(tab.projectId)
+                  : null;
+                const rowClassName = 'workspace-tabs-dropdown__row'
+                  + (active ? ' is-active' : '')
+                  + (activeRunCount > 0 ? ' is-running' : '');
                 return (
                   <div
                     key={tab.id}
-                    className={`workspace-tabs-dropdown__row${active ? ' is-active' : ''}`}
+                    className={rowClassName}
                   >
                     <button
                       type="button"
@@ -1667,6 +1782,14 @@ export function WorkspaceTabsBar({
                     >
                       <Icon name={display.icon} size={14} />
                       <span className="workspace-tabs-dropdown__row-label">{display.title}</span>
+                      {runLabel && runTestId ? (
+                        <span
+                          className="workspace-tab__activity-dot"
+                          aria-label={runLabel}
+                          title={runLabel}
+                          data-testid={runTestId}
+                        />
+                      ) : null}
                       {active ? <Icon name="check" size={14} /> : null}
                     </button>
                   </div>

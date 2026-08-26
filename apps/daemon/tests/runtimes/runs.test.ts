@@ -541,6 +541,18 @@ describe('chat run service shutdown', () => {
     ).toEqual([runB]);
   });
 
+  it('keeps active runs from different projects independent', () => {
+    const runs = createRuns();
+    const projectA = runs.create({ projectId: 'project-a', conversationId: 'conversation-a' });
+    const projectB = runs.create({ projectId: 'project-b', conversationId: 'conversation-b' });
+    projectA.status = 'running';
+    projectB.status = 'running';
+
+    expect(runs.list({ status: 'active' })).toEqual([projectA, projectB]);
+    expect(runs.list({ projectId: 'project-a', status: 'active' })).toEqual([projectA]);
+    expect(runs.list({ projectId: 'project-b', status: 'active' })).toEqual([projectB]);
+  });
+
   it('normalizes session mode and run context metadata at creation', () => {
     const runs = createRuns();
     const workspaceContext = {

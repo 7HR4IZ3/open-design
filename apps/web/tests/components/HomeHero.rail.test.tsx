@@ -160,6 +160,20 @@ describe('HomeHero intent rail', () => {
     expect(footer).toBeTruthy();
   });
 
+  it('shows the Web/Mobile selector in the initial creation composer', () => {
+    const onPickPrototypeSubtype = vi.fn();
+    renderHero({ onPickPrototypeSubtype });
+
+    expect(screen.getByTestId('home-hero-platform-picker')).toBeTruthy();
+    expect(screen.getByTestId('home-hero-platform-web').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('home-hero-platform-mobile').getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(screen.getByTestId('home-hero-platform-mobile'));
+    expect(onPickPrototypeSubtype).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'mobile' }),
+    );
+  });
+
   it('forwards the matching chip descriptor when clicked', () => {
     const { onPickChip } = renderHero();
     pickTemplate('image');

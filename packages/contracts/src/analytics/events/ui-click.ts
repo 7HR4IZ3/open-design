@@ -143,6 +143,8 @@ export interface HomeChatComposerClickProps {
     // Sub-category filter pill under the task rail (全部 / Landing / Brand /
     // Dashboards / …). `subcategory` carries the picked slug; '全部' sends
     // `subcategory: 'all'`. `chip_id` is the parent task type.
+    // The Web / Mobile project-platform selector in the initial composer.
+    | 'platform_selector'
     | 'subcategory_chip'
     // An example-prompt card below the rail ("示例提示词"). `chip_id` is the
     // task type; for plugin-preset cards `plugin_id` / `plugin_type` identify
@@ -191,6 +193,8 @@ export interface HomeChatComposerClickProps {
   chip_id?: string;
   // For `subcategory_chip`: the picked sub-category slug ('all' on 全部).
   subcategory?: string;
+  // For `platform_selector`: the selected initial project platform.
+  platform?: 'web' | 'mobile';
   // For `example_prompt` cards backed by a plugin preset: which preset.
   plugin_id?: string;
   plugin_type?: string;

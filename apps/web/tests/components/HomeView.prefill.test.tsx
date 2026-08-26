@@ -1119,6 +1119,8 @@ describe('HomeView prompt handoff', () => {
       prompt: 'Design a mobile checkout flow.',
       metadata: {
         kind: 'prototype',
+        editorMode: 'mobile',
+        platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],
       },
@@ -1206,6 +1208,8 @@ describe('HomeView prompt handoff', () => {
       legacyChipId: 'mobile',
       metadata: {
         kind: 'prototype',
+        editorMode: 'mobile',
+        platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],
       },
@@ -1671,6 +1675,8 @@ describe('HomeView prompt handoff', () => {
       subtype: 'mobile',
       metadata: {
         kind: 'prototype',
+        editorMode: 'mobile',
+        platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],
       },

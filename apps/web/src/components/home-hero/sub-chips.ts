@@ -82,9 +82,15 @@ const PROTOTYPE_SUB_CHIPS: readonly HomeHeroSubChip[] = [
     slug: 'mobile',
     label: 'Mobile app',
     icon: 'smartphone',
-    // Frames the screens for handheld viewports; the Prototype task profile
-    // already carries mobile guidance down to touch reach and breakpoints.
-    projectMetadata: { platform: 'auto', platformTargets: ['mobile-ios', 'mobile-android'] },
+    // Selects the multi-screen editor and frames the screens for handheld
+    // viewports. Both mode fields are kept because the editor uses
+    `editorMode` while the mobile prompt contract uses `platformMode`.
+    projectMetadata: {
+      editorMode: 'mobile',
+      platformMode: 'mobile',
+      platform: 'auto',
+      platformTargets: ['mobile-ios', 'mobile-android'],
+    },
   },
   {
     slug: 'wireframe',

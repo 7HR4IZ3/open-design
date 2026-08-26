@@ -60,6 +60,7 @@ import { ScenarioArt } from './home-hero/ScenarioArt';
 import { useEdgeAutoScroll, EdgeScrollZones } from './home-hero/EdgeAutoScroll';
 import {
   isSubChipParent,
+  prototypeSubChipForSlug,
   subChipsForChip,
   type HomeHeroSubChip,
 } from './home-hero/sub-chips';
@@ -1285,6 +1286,13 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
     contextOnlyMcpServers.length > 0 ||
     contextOnlyConnectors.length > 0 ||
     contextWorkspaceItems.length > 0;
+  const showPlatformPicker =
+    Boolean(onPickPrototypeSubtype) &&
+    (activeChipId === null || activeChipId === 'prototype');
+  const selectedPlatform =
+    activeChipId === 'prototype' && activePrototypeSubtypeId === 'mobile'
+      ? 'mobile'
+      : 'web';
   let optionRenderIndex = 0;
 
   return (
@@ -1332,6 +1340,23 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         }}
         onDrop={handleDrop}
       >
+        {showPlatformPicker ? (
+          <HomePlatformPicker
+            value={selectedPlatform}
+            disabled={pluginsLoading || pendingChipId !== null || pendingPluginId !== null}
+            onChange={(next) => {
+              trackHomeChatComposerClick(analytics.track, {
+                page_name: 'home',
+                area: 'chat_composer',
+                element: 'platform_selector',
+                platform: next,
+              });
+              onPickPrototypeSubtype?.(
+                next === 'mobile' ? prototypeSubChipForSlug('mobile') : null,
+              );
+            }}
+          />
+        ) : null}
         {showActiveContextRow ? (
           <div
             className="home-hero__active"
@@ -3439,6 +3464,72 @@ function RailGroup({
     >
       {cards}
       {children}
+    </div>
+  );
+}
+
+type HomePlatform = 'web' | 'mobile';
+
+function HomePlatformPicker({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: HomePlatform;
+  disabled: boolean;
+  onChange: (value: HomePlatform) => void;
+}) {
+  const t = useT();
+  const options: Array<{
+    value: HomePlatform;
+    label: string;
+    icon: IconName;
+    hint: string;
+  }> = [
+    {
+      value: 'web',
+      label: 'Web',
+      icon: 'globe',
+      hint: t('newproj.platform.responsive.hint'),
+    },
+    {
+      value: 'mobile',
+      label: 'Mobile',
+      icon: 'smartphone',
+      hint: t('homeHero.chip.mobileDesc'),
+    },
+  ];
+
+  return (
+    <div
+      className="home-hero__platform-picker"
+      data-testid="home-hero-platform-picker"
+      role="radiogroup"
+      aria-label="Project platform"
+    >
+      <span className="home-hero__platform-label">Build for</span>
+      <div className="home-hero__platform-options">
+        {options.map((option) => {
+          const selected = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className={`home-hero__platform-option${selected ? ' is-active' : ''}`}
+              data-testid={`home-hero-platform-${option.value}`}
+              role="radio"
+              aria-checked={selected}
+              aria-label={option.label}
+              title={option.hint}
+              disabled={disabled}
+              onClick={() => onChange(option.value)}
+            >
+              <Icon name={option.icon} size={14} aria-hidden />
+              <span>{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

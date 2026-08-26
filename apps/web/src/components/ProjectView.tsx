@@ -11760,7 +11760,7 @@ export function ProjectView({
           <MobileScreenCanvas
             projectId={project.id}
             files={projectFiles}
-            viewerOnly={projectMutationReadOnly}
+            viewerOnly={Boolean(projectMutationReadOnly)}
             workspaceContext={projectRunWorkspaceContext}
             onRefreshFiles={refreshProjectFiles}
             onActiveContextChange={handleActiveWorkspaceContextChange}

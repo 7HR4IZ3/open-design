@@ -928,6 +928,7 @@ import {
 } from './collab/proactive-content-pull.js';
 import {
   backgroundPullMaxEntriesFromEnv,
+  backgroundPullMaxCumulativeEntriesFromEnv,
   createBackgroundPullSizeGuard,
 } from './collab/background-pull-size-guard.js';
 import {
@@ -5031,6 +5032,7 @@ export async function startServer({
   // behavior. See collab/background-pull-size-guard.ts.
   const backgroundPullSizeGuard = createBackgroundPullSizeGuard({
     maxEntries: backgroundPullMaxEntriesFromEnv(),
+    maxCumulativeEntries: backgroundPullMaxCumulativeEntriesFromEnv(),
     inspect: (scope, version) =>
       inspectAuthorizedTeamProjectPull({
         projectId: scope.projectId,
@@ -5044,7 +5046,7 @@ export async function startServer({
       }),
     onDeferred: (info) => {
       console.info(
-        '[od] background shared-project pull deferred (oversized): ' +
+        `[od] background shared-project pull deferred (${info.reason}): ` +
           `projectId=${info.projectId} workspaceId=${info.workspaceId} ` +
           `version=${info.version} entries=${info.entryCount} ` +
           `maxEntries=${info.maxEntries}; opening the project pulls it on demand`,

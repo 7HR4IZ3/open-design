@@ -29,6 +29,23 @@ import type { AuthorizedTeamProjectPullInspection } from './authorized-team-proj
 export const DEFAULT_BACKGROUND_PULL_MAX_ENTRIES = 2000;
 export const BACKGROUND_PULL_MAX_ENTRIES_ENV =
   'OD_COLLAB_BACKGROUND_PULL_MAX_ENTRIES';
+export const BACKGROUND_PULL_MAX_CUMULATIVE_ENTRIES_ENV =
+  'OD_COLLAB_BACKGROUND_PULL_MAX_CUMULATIVE_ENTRIES';
+
+/**
+ * Per-process cumulative ceiling for background materialization. Defaults to
+ * `0` (disabled), so this ships inert until a deliberate value is chosen —
+ * picking that number is a capacity decision that needs production data on
+ * real team sizes, not a default inferred from a synthetic workspace.
+ */
+export function backgroundPullMaxCumulativeEntriesFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env[BACKGROUND_PULL_MAX_CUMULATIVE_ENTRIES_ENV]?.trim();
+  if (!raw || !/^\d+$/u.test(raw)) return 0;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
 
 /**
  * Threshold resolution: a non-negative integer from
@@ -58,6 +75,23 @@ export interface BackgroundPullSizeGuardScope {
 export interface BackgroundPullSizeGuardDeps {
   /** Entries above this count defer; `0` disables the guard. */
   maxEntries: number;
+  /**
+   * Total entries this process may materialize through the BACKGROUND lanes
+   * before deferring everything else to the foreground. Omitted or `0`
+   * disables it, which is the pre-existing behaviour.
+   *
+   * `maxEntries` answers "is this ONE project too big to push onto every
+   * member's disk" (incident #6512: a single 7442-file project). It cannot see
+   * accumulation: measured on a live workspace, 12 projects of 12 files each
+   * all cleared it individually while a member who only opened the client
+   * pulled 23 MB across 8 projects in 50s, with `candidates=25 suppressed=0`.
+   * Onboarding cost therefore grew linearly with team size with no ceiling.
+   *
+   * Deferring is not denying: the foreground open-project lane never consults
+   * this guard, so anything skipped here still materializes the moment the
+   * user actually opens it.
+   */
+  maxCumulativeEntries?: number;
   /** Authorize-only manifest probe — must never download blobs. */
   inspect: (
     scope: BackgroundPullSizeGuardScope,
@@ -70,6 +104,14 @@ export interface BackgroundPullSizeGuardDeps {
     version: number;
     entryCount: number;
     maxEntries: number;
+    /**
+     * Which ceiling deferred this. `oversized` is one project too large on its
+     * own; `budget-exhausted` is a small project that simply arrived after the
+     * cumulative budget was spent. They need different responses — raise the
+     * per-project threshold vs. raise the session budget — so a log that
+     * called both "oversized" sent readers after the wrong one.
+     */
+    reason: 'oversized' | 'budget-exhausted';
   }) => void;
   onError?: (error: unknown) => void;
 }
@@ -102,6 +144,14 @@ export function createBackgroundPullSizeGuard(
   /** Highest version deferred per scope. Same or older versions re-defer
    *  WITHOUT a probe; a newer version gets a fresh count. */
   const deferredVersions = new Map<string, number>();
+  /** Entries already cleared for background materialization this process. Only
+   *  counted for decisions this guard actually allowed, so a project deferred
+   *  for size never consumes budget it did not spend. */
+  let cumulativeEntries = 0;
+  /** Versions deferred because the session budget was spent. Kept apart from
+   *  `deferredVersions` (which means "permanently too big") so the two reasons
+   *  stay distinguishable, while both avoid re-probing. */
+  const budgetDeferredVersions = new Map<string, number>();
   /** Exact version whose probe last said 'pull', per scope. Retry loops for
    *  the same version must not re-authorize against the cloud. */
   const allowedVersions = new Map<string, number>();
@@ -133,6 +183,12 @@ export function createBackgroundPullSizeGuard(
       allowedVersions.set(key, version);
       return 'pull';
     }
+    // Per-project ceiling FIRST. Exceeding it is a permanent property of the
+    // version, so it must be decided (and cached) regardless of how much
+    // budget happens to remain — checking the budget first mislabelled an
+    // oversized project as `budget-exhausted` whenever the remainder was
+    // smaller than it, and cost a fresh probe on every later round because it
+    // never reached the oversized cache.
     if (inspection.entryCount > deps.maxEntries) {
       const previous = deferredVersions.get(key);
       if (previous == null || version > previous) {
@@ -145,6 +201,32 @@ export function createBackgroundPullSizeGuard(
           version,
           entryCount: inspection.entryCount,
           maxEntries: deps.maxEntries,
+          reason: 'oversized',
+        });
+      } catch {
+        // Observation must never affect the decision.
+      }
+      return 'defer';
+    }
+    const cumulativeLimit = deps.maxCumulativeEntries ?? 0;
+    if (
+      cumulativeLimit > 0 &&
+      cumulativeEntries + inspection.entryCount > cumulativeLimit
+    ) {
+      // Remembered like any other deferral. A budget deferral cannot change
+      // until the process restarts, and every map here is process-local — so
+      // caching it costs nothing on restart and saves an authorize-only probe
+      // (plus a duplicate log line) on every subsequent catch-up round, which
+      // otherwise repeat for as long as the head stays unmaterialized.
+      budgetDeferredVersions.set(key, version);
+      try {
+        deps.onDeferred?.({
+          projectId: scope.projectId,
+          workspaceId: scope.workspaceId,
+          version,
+          entryCount: inspection.entryCount,
+          maxEntries: deps.maxEntries,
+          reason: 'budget-exhausted',
         });
       } catch {
         // Observation must never affect the decision.
@@ -152,6 +234,7 @@ export function createBackgroundPullSizeGuard(
       return 'defer';
     }
     allowedVersions.set(key, version);
+    if (cumulativeLimit > 0) cumulativeEntries += inspection.entryCount;
     return 'pull';
   };
 
@@ -168,6 +251,8 @@ export function createBackgroundPullSizeGuard(
       const key = scopeKey(scope);
       const deferred = deferredVersions.get(key);
       if (deferred != null && version <= deferred) return 'defer';
+      const budgetDeferred = budgetDeferredVersions.get(key);
+      if (budgetDeferred != null && version <= budgetDeferred) return 'defer';
       if (allowedVersions.get(key) === version) return 'pull';
       const probeKey = `${key}#${version}`;
       const existing = probesInFlight.get(probeKey);

@@ -80,11 +80,19 @@ COPY plugins/_official ./plugins/_official
 
 FROM ${RUNTIME_IMAGE}
 
-RUN apk add --no-cache tini poppler-utils bash git && \
+ARG CODEX_VERSION=0.149.1
+ARG OPENCODE_VERSION=1.18.23
+
+RUN apk add --no-cache tini poppler-utils bash git libc6-compat && \
+    npm install --global --no-update-notifier --no-fund --omit=dev \
+      "@openai/codex@${CODEX_VERSION}" \
+      "opencode-ai@${OPENCODE_VERSION}" && \
+    npm cache clean --force && \
     addgroup -S -g 1001 open-design && \
     adduser -S -D -H -u 1001 -G open-design open-design
 
 WORKDIR /app
+COPY deploy/container-entrypoint.sh /usr/local/bin/open-design-entrypoint
 COPY --from=build --chown=open-design:open-design /app/deploy/daemon ./apps/daemon
 COPY --from=build --chown=open-design:open-design /app/apps/web/out ./apps/web/out
 COPY --from=build --chown=open-design:open-design /app/skills ./skills
@@ -100,16 +108,19 @@ COPY --from=build --chown=open-design:open-design /app/assets/community-pets ./a
 # via the same registry path third-party plugins use.
 COPY --from=build --chown=open-design:open-design /app/plugins/_official ./plugins/_official
 
-RUN mkdir -p /app/.od && \
-    chown -R open-design:open-design /app
+RUN chmod 755 /usr/local/bin/open-design-entrypoint && \
+    mkdir -p /app/.od /home/open-design && \
+    chown -R open-design:open-design /app /home/open-design
 
 ENV NODE_ENV=production
 ENV NODE_OPTIONS=--max-old-space-size=192
 ENV OD_BIND_HOST=0.0.0.0
 ENV OD_PORT=7456
+ENV HOME=/home/open-design
+ENV CODEX_HOME=/home/open-design/.codex
 
 EXPOSE 7456
 
 USER open-design
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/open-design-entrypoint"]
 CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]

@@ -18,6 +18,12 @@ services:
       OD_API_TOKEN: ${OD_API_TOKEN:-}
       OD_DISABLE_API_AUTH: ${OPEN_DESIGN_DISABLE_API_AUTH:-}
       OD_CODEX_SANDBOX: ${OD_CODEX_SANDBOX:-}
+      # Optional runtime-only credentials. Prefer Render Secret Files when
+      # available; the entrypoint also accepts base64-encoded JSON values.
+      CODEX_AUTH_JSON_B64: ${CODEX_AUTH_JSON_B64:-}
+      OPENCODE_AUTH_JSON_B64: ${OPENCODE_AUTH_JSON_B64:-}
+      CODEX_AUTH_FILE: ${CODEX_AUTH_FILE:-}
+      OPENCODE_AUTH_FILE: ${OPENCODE_AUTH_FILE:-}
     ports:
       - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
     volumes:
@@ -25,6 +31,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      - /home/open-design:uid=1001,gid=1001
     security_opt:
       - no-new-privileges:true
     mem_limit: ${OPEN_DESIGN_MEM_LIMIT:-384m}

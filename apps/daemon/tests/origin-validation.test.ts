@@ -701,6 +701,37 @@ describe('isLocalSameOrigin: OD_ALLOWED_ORIGINS bypass for reverse-proxy deploym
   });
 });
 
+describe('cloud deployment origin defaults', () => {
+  it('includes the explicit public base URL and Render external URL', () => {
+    expect(
+      configuredAllowedOrigins({
+        OD_PUBLIC_BASE_URL: 'https://od.example.com/',
+        RENDER_EXTERNAL_URL: 'https://od.onrender.com',
+      }),
+    ).toEqual(['https://od.example.com', 'https://od.onrender.com']);
+  });
+
+  it('allows the Render HTTPS origin while the daemon uses its internal port', () => {
+    const env: NodeJS.ProcessEnv = {
+      OD_BIND_HOST: '0.0.0.0',
+      OD_PORT: '7456',
+      RENDER_EXTERNAL_URL: 'https://open-design-2u8f.onrender.com',
+    };
+    expect(
+      isLocalSameOrigin(
+        {
+          headers: {
+            host: 'open-design-2u8f.onrender.com',
+            origin: 'https://open-design-2u8f.onrender.com',
+          },
+        },
+        7456,
+        env,
+      ),
+    ).toBe(true);
+  });
+});
+
 // Firefox and Chrome omit the Origin header on same-origin GET requests per
 // the Fetch spec. When the daemon runs behind a remote-access proxy whose
 // public hostname is listed in OD_ALLOWED_ORIGINS, those legitimate

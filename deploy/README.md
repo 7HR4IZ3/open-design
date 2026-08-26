@@ -88,9 +88,41 @@ Pin a specific published image with a digest instead of the mutable `latest` tag
 ```bash
 OPEN_DESIGN_IMAGE=ghcr.io/nexu-io/od@sha256:<digest> docker compose up -d --no-build
 ```
-The image intentionally does not bundle Claude/Codex/Gemini CLI binaries. Keep
-those outside the image, or build a separate private runtime layer if a server
-deployment needs local code-agent CLIs installed in the container.
+The image bundles pinned Codex and OpenCode CLI binaries so a server deployment
+can use them as local runtimes. It does not bundle Claude or Gemini. CLI
+credentials are never part of the image: provide them at container startup
+with the runtime-only `CODEX_AUTH_JSON_B64` / `OPENCODE_AUTH_JSON_B64` values,
+or mount Render Secret Files and set `CODEX_AUTH_FILE` /
+`OPENCODE_AUTH_FILE`. The entrypoint validates the JSON, writes it with mode
+`0600`, and never logs its contents.
+
+### Render
+
+Render supplies `RENDER_EXTERNAL_URL` to web services. OpenDesign now adds that
+exact URL to its browser-origin allowlist automatically, so the deployed UI can
+call its own `/api` without adding a hard-coded `onrender.com` URL. Set
+`OD_API_TOKEN` in Render because the service binds publicly; `OD_ALLOWED_ORIGINS`
+is only needed for additional browser origins.
+
+For local Codex/OpenCode runtimes, upload the auth files as Render Secret Files
+and set these runtime environment variables:
+
+```text
+CODEX_AUTH_FILE=/etc/secrets/codex-auth.json
+OPENCODE_AUTH_FILE=/etc/secrets/opencode-auth.json
+```
+
+The free Render tier has ephemeral storage, so credentials or agent session
+files written inside the service can disappear after a restart, deploy, or
+spin-down. The service also has no interactive shell for completing a CLI
+login. Keep the Secret Files as the source of truth and redeploy/restart after
+rotating them. Do not paste either auth JSON into a Dockerfile, commit it, or
+pass it as a build argument.
+
+The **Sign in to OpenDesign** control is the AMR/Vela cloud integration; it is
+separate from local Codex/OpenCode authentication. The image does not bundle
+the private `vela` CLI, so local-only deployments should select Codex or
+OpenCode in Settings and leave the OpenDesign cloud sign-in unused.
 
 ## Linux: mounting host agent CLIs
 

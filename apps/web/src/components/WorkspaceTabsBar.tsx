@@ -135,6 +135,14 @@ const MAX_PERSISTED_TAB_SCOPES = 12;
 const TAB_DRAG_HAPTIC_MS = 8;
 const TAB_DROP_HAPTIC_MS = 12;
 
+function activeRunLabelForCount(count: number): string {
+  return String(count) + ' active run' + (count === 1 ? '' : 's');
+}
+
+function activeRunTestIdForProject(projectId: string): string {
+  return 'workspace-tab-activity-' + projectId;
+}
+
 function consumeWorkspaceTabShortcut(event: KeyboardEvent) {
   event.preventDefault();
   event.stopPropagation();
@@ -1700,6 +1708,15 @@ export function WorkspaceTabsBar({
     const projectTabs = state.tabs
       .filter((tab) => tab.kind !== 'entry')
       .sort((a, b) => mruRank(a) - mruRank(b));
+    const activeTabRunCount = activeTab.kind === 'project'
+      ? activeRunCounts[activeTab.projectId] ?? 0
+      : 0;
+    const activeTabRunLabel = activeTabRunCount > 0
+      ? activeRunLabelForCount(activeTabRunCount)
+      : null;
+    const activeTabRunTestId = activeTab.kind === 'project'
+      ? activeRunTestIdForProject(activeTab.projectId)
+      : null;
     return (
       <div className="workspace-tabs-dropdown" data-testid="workspace-tabs-dropdown">
         <button
@@ -1714,12 +1731,12 @@ export function WorkspaceTabsBar({
             <Icon name={isEntryActive ? 'home' : activeDisplay.icon} size={14} />
           </span>
           <span className="workspace-tabs-dropdown__label">{activeDisplay.title}</span>
-          {activeTab.kind === 'project' && (activeRunCounts[activeTab.projectId] ?? 0) > 0 ? (
+          {activeTabRunLabel && activeTabRunTestId ? (
             <span
               className="workspace-tab__activity-dot"
-              aria-label={`${activeRunCounts[activeTab.projectId]} active run${activeRunCounts[activeTab.projectId] === 1 ? '' : 's'}`}
-              title={`${activeRunCounts[activeTab.projectId]} active run${activeRunCounts[activeTab.projectId] === 1 ? '' : 's'}`}
-              data-testid={`workspace-tab-activity-${activeTab.projectId}`}
+              aria-label={activeTabRunLabel}
+              title={activeTabRunLabel}
+              data-testid={activeTabRunTestId}
             />
           ) : null}
           <Icon name="chevron-down" size={14} />
@@ -1739,10 +1756,19 @@ export function WorkspaceTabsBar({
                 const activeRunCount = tab.kind === 'project'
                   ? activeRunCounts[tab.projectId] ?? 0
                   : 0;
+                const runLabel = activeRunCount > 0
+                  ? activeRunLabelForCount(activeRunCount)
+                  : null;
+                const runTestId = tab.kind === 'project'
+                  ? activeRunTestIdForProject(tab.projectId)
+                  : null;
+                const rowClassName = 'workspace-tabs-dropdown__row'
+                  + (active ? ' is-active' : '')
+                  + (activeRunCount > 0 ? ' is-running' : '');
                 return (
                   <div
                     key={tab.id}
-                    className={`workspace-tabs-dropdown__row${active ? ' is-active' : ''}${activeRunCount > 0 ? ' is-running' : ''}`}
+                    className={rowClassName}
                   >
                     <button
                       type="button"
@@ -1756,12 +1782,12 @@ export function WorkspaceTabsBar({
                     >
                       <Icon name={display.icon} size={14} />
                       <span className="workspace-tabs-dropdown__row-label">{display.title}</span>
-                      {activeRunCount > 0 ? (
+                      {runLabel && runTestId ? (
                         <span
                           className="workspace-tab__activity-dot"
-                          aria-label={`${activeRunCount} active run${activeRunCount === 1 ? '' : 's'}`}
-                          title={`${activeRunCount} active run${activeRunCount === 1 ? '' : 's'}`}
-                          data-testid={`workspace-tab-activity-${tab.projectId}`}
+                          aria-label={runLabel}
+                          title={runLabel}
+                          data-testid={runTestId}
                         />
                       ) : null}
                       {active ? <Icon name="check" size={14} /> : null}

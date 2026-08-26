@@ -469,6 +469,26 @@ html.od-radial-open .workspace-shell {
   font-weight: 500;
   letter-spacing: 0;
 }
+
+.workspace-tab__activity-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: #39d98a;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #39d98a 18%, transparent), 0 0 8px color-mix(in srgb, #39d98a 65%, transparent);
+  animation: workspace-tab-activity-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes workspace-tab-activity-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tab__activity-dot { animation: none; }
+}
 /* Hairline between the home icon and the sidebar toggle in the pinned pill. */
 .workspace-tab__divider {
   width: 1px;

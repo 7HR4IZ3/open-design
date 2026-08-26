@@ -14,6 +14,13 @@ import { navigate, type Route } from '../../src/router';
 import type { Project } from '../../src/types';
 import { setWorkspaceTabsDock } from '../../src/components/workspaceTabsDock';
 
+const listActiveProjectRunsMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/providers/daemon', () => ({
+  RUNS_CHANGED_EVENT: 'open-design:runs-changed',
+  listActiveProjectRuns: listActiveProjectRunsMock,
+}));
+
 afterEach(() => {
   setWorkspaceTabsDock(null);
 });
@@ -154,6 +161,7 @@ describe('WorkspaceTabsBar navigation semantics', () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();
+    listActiveProjectRunsMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -236,6 +244,58 @@ describe('WorkspaceTabsBar navigation semantics', () => {
 
     firstDock.remove();
     secondDock.remove();
+  });
+
+  it('keeps active-run indicators for background project tabs', async () => {
+    listActiveProjectRunsMock.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-alpha') {
+        return [{
+          id: 'run-alpha',
+          projectId,
+          conversationId: 'conversation-alpha',
+          assistantMessageId: null,
+          agentId: 'codex',
+          status: 'running',
+          createdAt: 1,
+          updatedAt: 1,
+        }];
+      }
+      return [];
+    });
+    const dock = document.createElement('div');
+    document.body.append(dock);
+    setWorkspaceTabsDock(dock);
+    const { rerender } = render(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[project, projectBeta]}
+        daemonLive
+      />,
+    );
+
+    // Open a second project while Alpha's run is still active. The indicator
+    // must survive Alpha's ProjectView unmount and remain visible in the
+    // picker after switching to Beta.
+    await waitFor(() => {
+      expect(screen.getAllByTestId('workspace-tab-activity-project-alpha').length).toBeGreaterThan(0);
+    });
+    rerender(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute, projectId: 'project-beta' }}
+        projects={[project, projectBeta]}
+        daemonLive
+      />,
+    );
+    const trigger = await screen.findByTestId('workspace-tabs-dropdown-trigger');
+    fireEvent.click(trigger);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('workspace-tab-activity-project-alpha').length).toBeGreaterThan(0);
+      expect(screen.queryByTestId('workspace-tab-activity-project-beta')).toBeNull();
+    });
+    expect(listActiveProjectRunsMock).toHaveBeenCalledWith('project-alpha', null);
+    expect(listActiveProjectRunsMock).toHaveBeenCalledWith('project-beta', null);
+    dock.remove();
   });
 
   // recvq5eKj2kdF0: Home's own project fetch (recent/drafts, capped) replaces

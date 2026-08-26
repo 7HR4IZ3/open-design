@@ -143,7 +143,6 @@ describe('HomeView one-click create from a scene-specific carousel line', () => 
       scene: 'mobile',
       metadata: {
         kind: 'prototype',
-        editorMode: 'mobile',
         platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],

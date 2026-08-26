@@ -128,10 +128,17 @@ function isPrivateLanIpv4(value: string): boolean {
 }
 
 function localPrivateLanHosts(): string[] {
-  return Object.values(networkInterfaces())
-    .flatMap((entries) => entries ?? [])
-    .filter((entry) => entry.family === 'IPv4' && !entry.internal && isPrivateLanIpv4(entry.address))
-    .map((entry) => entry.address);
+  try {
+    return Object.values(networkInterfaces())
+      .flatMap((entries) => entries ?? [])
+      .filter((entry) => entry.family === 'IPv4' && !entry.internal && isPrivateLanIpv4(entry.address))
+      .map((entry) => entry.address);
+  } catch {
+    // Some restricted containers do not permit querying host interfaces while
+    // loading next.config.ts. Loopback and explicitly configured origins remain
+    // available, so a failed LAN probe must not prevent a production build.
+    return [];
+  }
 }
 
 function configuredAllowedDevHosts(): string[] {

@@ -56,7 +56,6 @@ describe('subChipsForChip', () => {
     // Mobile app and Wireframe carry a metadata refinement of their parent, not
     // a pointer at a first-level chip: nothing here names a chip id.
     expect(result.find((s) => s.slug === 'mobile')?.projectMetadata).toEqual({
-      editorMode: 'mobile',
       platformMode: 'mobile',
       platform: 'auto',
       platformTargets: ['mobile-ios', 'mobile-android'],
@@ -124,13 +123,12 @@ describe('prototypeSceneProjectMetadata', () => {
     );
     expect(mobile).toEqual({
       kind: 'prototype',
-      editorMode: 'mobile',
       platformMode: 'mobile',
       platform: 'auto',
       platformTargets: ['mobile-ios', 'mobile-android'],
     });
     expect(JSON.stringify(mobile)).toBe(
-      '{"kind":"prototype","editorMode":"mobile","platformMode":"mobile","platform":"auto","platformTargets":["mobile-ios","mobile-android"]}',
+      '{"kind":"prototype","platformMode":"mobile","platform":"auto","platformTargets":["mobile-ios","mobile-android"]}',
     );
 
     const wireframe = prototypeSceneProjectMetadata(

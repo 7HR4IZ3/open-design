@@ -83,10 +83,8 @@ const PROTOTYPE_SUB_CHIPS: readonly HomeHeroSubChip[] = [
     label: 'Mobile app',
     icon: 'smartphone',
     // Selects the multi-screen editor and frames the screens for handheld
-    // viewports. Both mode fields are kept because the editor uses
-    // `editorMode` while the mobile prompt contract uses `platformMode`.
+    // viewports through the canonical project-level platform mode.
     projectMetadata: {
-      editorMode: 'mobile',
       platformMode: 'mobile',
       platform: 'auto',
       platformTargets: ['mobile-ios', 'mobile-android'],

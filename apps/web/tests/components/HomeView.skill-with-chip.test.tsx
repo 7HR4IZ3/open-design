@@ -267,7 +267,6 @@ describe('HomeView — @-mentioning a Skill on top of a picked task type', () =>
     // The scene's refinement is the whole reason the user picked it.
     expect(payload.projectMetadata).toEqual({
       kind: 'prototype',
-      editorMode: 'mobile',
       platformMode: 'mobile',
       platform: 'auto',
       platformTargets: ['mobile-ios', 'mobile-android'],

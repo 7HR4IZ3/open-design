@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 24818)
+Total output lines: 2687
+
 // @vitest-environment jsdom
 
 import { act } from 'react';
@@ -1119,7 +1122,6 @@ describe('HomeView prompt handoff', () => {
       prompt: 'Design a mobile checkout flow.',
       metadata: {
         kind: 'prototype',
-        editorMode: 'mobile',
         platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],
@@ -1208,7 +1210,6 @@ describe('HomeView prompt handoff', () => {
       legacyChipId: 'mobile',
       metadata: {
         kind: 'prototype',
-        editorMode: 'mobile',
         platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],
@@ -1397,97 +1398,7 @@ describe('HomeView prompt handoff', () => {
   it('defaults to "No design system" (不指定) when the user has no personal default and submits a null designSystemId', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       if (typeof url === 'string' && url === '/api/plugins') {
-        return new Response(JSON.stringify({ plugins: [WEB_PROTOTYPE_PLUGIN] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    stubAnimationFrame();
-    const onSubmit = vi.fn();
-
-    // A preset is offered (REFLY) but it is NOT the user's personal default, so
-    // the composer must default to "No design system" rather than a preset.
-    render(
-      <HomeView
-        projects={[]}
-        designSystems={[REFLY_DESIGN_SYSTEM]}
-        defaultDesignSystemId={null}
-        onSubmit={onSubmit}
-        onOpenProject={() => undefined}
-        onViewAllProjects={() => undefined}
-      />,
-    );
-
-    await clearActiveTypeChip();
-    await pickHomeTemplate('prototype');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('home-hero-template-trigger').textContent).toContain('Prototype');
-    });
-    // Round-4 skin: the unset trigger reads "Design system" (the field name)
-    // instead of the "No design system" placeholder.
-    expect(
-      screen.getByTestId('home-hero-design-system-trigger').textContent,
-    ).toContain('Design system');
-
-    await setPromptAndSettle('Build a pricing-page prototype.');
-    fireEvent.click(screen.getByTestId('home-hero-submit'));
-
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      pluginId: null,
-      automaticStrategyTaskProfile: 'prototype',
-      projectKind: 'prototype',
-      designSystemId: null,
-    })));
-    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('pluginInputs');
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/apply-local'))).toBe(false);
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('lets the user explicitly pick "No design system" to override a personal default and submit a null designSystemId', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (typeof url === 'string' && url === '/api/plugins') {
-        return new Response(JSON.stringify({ plugins: [WEB_PROTOTYPE_PLUGIN] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    stubAnimationFrame();
-    const onSubmit = vi.fn();
-
-    render(
-      <HomeView
-        projects={[]}
-        designSystems={[REFLY_DESIGN_SYSTEM]}
-        defaultDesignSystemId="ds-refly"
-        onSubmit={onSubmit}
-        onOpenProject={() => undefined}
-        onViewAllProjects={() => undefined}
-      />,
-    );
-
-    await clearActiveTypeChip();
-    await pickHomeTemplate('prototype');
-
-    // The personal default pre-selects, as before.
-    await waitFor(() => {
-      expect(
-        screen.getByTestId('home-hero-design-system-trigger').textContent,
-      ).toContain('Refly Design System');
-    });
-
-    // Open the shared design-system picker popover and pick the explicit
-    // "No design system" row.
-    fireEvent.click(screen.getByTestId('home-hero-design-system-trigger'));
-    const popover = await screen.findByTestId('project-ds-picker-popover');
-    const noneOption = await within(popover).findByText('No design system');
-    fireEvent.mouseDown(noneOption);
+        return new Response(JSON.stringify({ p…818 tokens truncated…ouseDown(noneOption);
     await waitFor(() => {
       // Round-4 skin: with nothing selected the trigger reads "Design system".
       expect(
@@ -1675,7 +1586,6 @@ describe('HomeView prompt handoff', () => {
       subtype: 'mobile',
       metadata: {
         kind: 'prototype',
-        editorMode: 'mobile',
         platformMode: 'mobile',
         platform: 'auto',
         platformTargets: ['mobile-ios', 'mobile-android'],

@@ -33,7 +33,11 @@ RUN corepack enable && \
     pnpm install --frozen-lockfile
 
 COPY apps ./apps
-RUN pnpm --filter @open-design/daemon build && \
+# The daemon image serves the static Next export from apps/web/out and exposes
+# its own API. Cloud-only Next route handlers are deployed by Vercel's server
+# build, but dynamic handlers cannot be emitted by Next's static export.
+RUN rm -rf apps/web/app/api && \
+    pnpm --filter @open-design/daemon build && \
     pnpm --filter @open-design/web build && \
     pnpm --filter @open-design/daemon deploy --legacy --prod /app/deploy/daemon && \
     pnpm store prune && \

@@ -3,5 +3,19 @@
   "buildCommand": "pnpm build:vercel",
   "installCommand": "pnpm install",
   "outputDirectory": "apps/web/out",
-  "framework": null
+  "framework": null,
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://open-design-2u8f.onrender.com/api/:path*"
+    },
+    {
+      "source": "/artifacts/:path*",
+      "destination": "https://open-design-2u8f.onrender.com/artifacts/:path*"
+    },
+    {
+      "source": "/frames/:path*",
+      "destination": "https://open-design-2u8f.onrender.com/frames/:path*"
+    }
+  ]
 }

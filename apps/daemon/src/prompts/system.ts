@@ -56,6 +56,7 @@ import {
   type MediaExecutionPolicy,
   type MediaSurface,
   type OdNextStrategyRequestRecipeV2,
+  renderMobileMultiScreenPrompt,
 } from '@open-design/contracts';
 
 // Prepended first in every composed prompt so it wins precedence over all
@@ -164,6 +165,8 @@ type ProjectMetadata = {
   templateId?: string | null;
   templateLabel?: string | null;
   platform?: string | null;
+  platformMode?: 'web' | 'mobile' | null;
+  mobileEditor?: unknown;
   platformTargets?: string[] | null;
   inspirationDesignSystemIds?: string[];
   skipDiscoveryBrief?: boolean | null;
@@ -1301,6 +1304,8 @@ export function composeSystemPrompt({
     isSlimCore ? 'facts' : 'classic',
   );
   if (metaBlock) parts.push(metaBlock);
+  const mobilePrompt = renderMobileMultiScreenPrompt(metadata as Parameters<typeof renderMobileMultiScreenPrompt>[0]);
+  if (mobilePrompt) parts.push('\n\n---\n\n' + mobilePrompt);
 
   // Decks have a load-bearing framework (nav, counter, scroll JS, print
   // stylesheet for PDF stitching). Pin it last so it overrides any softer
@@ -1586,6 +1591,7 @@ function renderMetadataBlock(
       : 'These are the structured choices the user made (or skipped) when creating this project. Treat known fields as authoritative. Missing fields are unresolved facts, not mandatory questions; infer reasonable defaults and clarify only when an answer would materially change the result.',
   );
   lines.push('');
+  lines.push('- **platformMode**: ' + (metadata.platformMode ?? 'web'));
   lines.push(`- **kind**: ${metadata.kind}`);
   if (metadata.platform) {
     lines.push(`- **platform**: ${metadata.platform}`);

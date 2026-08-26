@@ -40,6 +40,7 @@ import {
   type OdNextStrategyRequestRecipeV2,
 } from './od-next-strategy.js';
 import { SETTINGS_MEDIA_PROVIDERS_PATH } from '../settings-nav.js';
+import { renderMobileMultiScreenPrompt } from './mobile.js';
 
 export const BASE_SYSTEM_PROMPT = OFFICIAL_DESIGNER_PROMPT;
 const ELEVENLABS_VOICE_PROMPT_OPTION_LIMIT = 100;
@@ -493,6 +494,8 @@ export function composeSystemPrompt({
 
   const metaBlock = renderMetadataBlock(metadata, template, audioVoiceOptions, audioVoiceOptionsError);
   if (metaBlock) parts.push(metaBlock);
+  const mobilePrompt = renderMobileMultiScreenPrompt(metadata);
+  if (mobilePrompt) parts.push('\n\n---\n\n' + mobilePrompt);
 
   // Decks have a load-bearing framework (nav, counter, scroll JS, print
   // stylesheet for PDF stitching). Pin it last so it overrides any softer
@@ -657,6 +660,7 @@ function platformLines(
   metadata: ProjectMetadata,
 ): string[] {
   const out: string[] = [];
+  out.push('- **platformMode**: ' + (metadata.platformMode ?? 'web'));
   if (metadata.platform) {
     out.push(`- **platform**: ${metadata.platform}`);
   } else if (metadata.kind === 'prototype' || metadata.kind === 'template' || metadata.kind === 'other') {

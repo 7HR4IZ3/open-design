@@ -9,6 +9,7 @@ const WORKSPACE_CONTEXT_KINDS = new Set([
   'terminal',
   'side-chat',
   'live-artifact',
+  'mobile-screen',
 ]);
 
 export interface WorkspaceContextItem {
@@ -237,6 +238,11 @@ function renderWorkspaceContextToolHints(items: WorkspaceContextItem[]) {
   if (kinds.has('live-artifact')) {
     hints.push(
       '- Live artifact tabs: treat the selected live artifact as the preview target. Inspect or modify its source files rather than editing generated runtime output when possible.',
+    );
+  }
+  if (kinds.has('mobile-screen')) {
+    hints.push(
+      '- Mobile screens: use the selected stable screen id and project-relative HTML path as the default edit target. Read the mobile manifest and the selected screen before editing; a selection is a default target, not a restriction when the user asks for a multi-screen change.',
     );
   }
   return hints.join('\n');

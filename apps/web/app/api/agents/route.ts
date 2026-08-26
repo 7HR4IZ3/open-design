@@ -4,6 +4,19 @@ export const runtime = 'nodejs';
 
 const agents = [
   {
+    id: 'byok-opencode',
+    name: 'OpenDesign Cloud',
+    bin: 'provider-api',
+    available: true,
+    authStatus: 'configured',
+    modelsSource: 'fallback',
+    models: [
+      { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
+      { id: 'gpt-4.1', label: 'GPT-4.1' },
+    ],
+    docsUrl: 'https://platform.openai.com/docs',
+  },
+  {
     id: 'openai-api',
     name: 'OpenAI API',
     bin: 'provider-api',

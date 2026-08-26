@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
+import {
+  CLOUD_PERSONAL_MEMBER_ID,
+  CLOUD_PERSONAL_WORKSPACE_ID,
+} from '../../_lib/cloud-store';
 
 export const runtime = 'nodejs';
 
-export const PERSONAL_WORKSPACE_ID = 'personal-vercel';
-export const PERSONAL_MEMBER_ID = 'member-vercel';
+export const PERSONAL_WORKSPACE_ID = CLOUD_PERSONAL_WORKSPACE_ID;
+export const PERSONAL_MEMBER_ID = CLOUD_PERSONAL_MEMBER_ID;
 
 export function GET(request: Request) {
   const response = NextResponse.json({

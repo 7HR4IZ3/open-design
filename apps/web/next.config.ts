@@ -128,10 +128,17 @@ function isPrivateLanIpv4(value: string): boolean {
 }
 
 function localPrivateLanHosts(): string[] {
-  return Object.values(networkInterfaces())
-    .flatMap((entries) => entries ?? [])
-    .filter((entry) => entry.family === 'IPv4' && !entry.internal && isPrivateLanIpv4(entry.address))
-    .map((entry) => entry.address);
+  try {
+    return Object.values(networkInterfaces())
+      .flatMap((entries) => entries ?? [])
+      .filter((entry) => entry.family === 'IPv4' && !entry.internal && isPrivateLanIpv4(entry.address))
+      .map((entry) => entry.address);
+  } catch {
+    // Some restricted build sandboxes do not expose interface enumeration.
+    // Loopback plus explicitly configured origins are still sufficient for
+    // dev-host validation, and production builds do not need LAN discovery.
+    return [];
+  }
 }
 
 function configuredAllowedDevHosts(): string[] {

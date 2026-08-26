@@ -7,7 +7,17 @@ type ChatInput = {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   message?: string;
   model?: string;
+  systemPrompt?: string;
 };
+
+const DEFAULT_SYSTEM_PROMPT = [
+  'You are the hosted OpenDesign design agent.',
+  'Help the user plan and build polished, responsive web experiences.',
+  'When the user asks you to create or modify a UI, return one complete, self-contained HTML document inside this exact wrapper:',
+  '<artifact identifier="index.html" type="text/html" title="A concise title"> ...complete HTML... </artifact>',
+  'Use inline CSS and JavaScript unless the user explicitly asks for separate files.',
+  'Do not put the artifact in a Markdown code fence. For ordinary questions, answer in concise plain text.',
+].join('\n');
 
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -18,12 +28,16 @@ export async function POST(request: Request) {
   if (!apiKey) return Response.json({ error: 'OPENAI_API_KEY is not configured' }, { status: 503 });
 
   const input = await request.json() as ChatInput;
-  const messages = input.messages?.length
-    ? input.messages
+  const history = input.messages?.length
+    ? input.messages.filter((message) => message.role !== 'system')
     : input.message
       ? [{ role: 'user' as const, content: input.message }]
       : [];
-  if (!messages.length) return Response.json({ error: 'messages or message is required' }, { status: 400 });
+  if (!history.length) return Response.json({ error: 'messages or message is required' }, { status: 400 });
+  const messages = [
+    { role: 'system' as const, content: input.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT },
+    ...history,
+  ];
 
   const client = new OpenAI({ apiKey });
   const stream = await client.chat.completions.create({

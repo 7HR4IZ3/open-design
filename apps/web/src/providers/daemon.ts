@@ -66,6 +66,7 @@ import {
   type PersistedArtifactFileRef,
 } from '../artifacts/strip';
 import { trackRunProgress, trackRunStart, trackRunTerminal } from '../observability/stuck-run';
+import { randomUUID } from '../utils/uuid';
 
 const MAX_TRANSCRIPT_MESSAGE_CHARS = 12_000;
 const LARGE_TOOL_RESULT_CHARS = 8_000;
@@ -373,6 +374,135 @@ export interface DaemonStreamOptions {
   /** Called once the daemon projects the logical strategy task as terminal
    *  (completed / blocked / canceled), with the terminal projection. */
   onStrategyTaskSettled?: (strategyTask: StrategyTaskProjectionV2) => void;
+}
+
+let hostedCloudRuntimePromise: Promise<boolean> | null = null;
+
+async function isHostedCloudRuntime(): Promise<boolean> {
+  if (!hostedCloudRuntimePromise) {
+    hostedCloudRuntimePromise = fetch('/api/health', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) return false;
+        const body = await response.json().catch(() => null) as { runtime?: unknown } | null;
+        return body?.runtime === 'vercel';
+      })
+      .catch(() => false);
+  }
+  return hostedCloudRuntimePromise;
+}
+
+async function streamViaHostedCloud(options: DaemonStreamOptions): Promise<void> {
+  const {
+    history,
+    signal,
+    cancelSignal,
+    handlers,
+    model,
+    byokProvider,
+    projectId,
+    conversationId,
+    attachments,
+    systemPrompt,
+    onRunCreated,
+    onRunStatus,
+  } = options;
+  if (signal.aborted || cancelSignal?.aborted) return;
+  if (byokProvider && byokProvider.protocol !== 'openai') {
+    const runId = `cloud-${randomUUID()}`;
+    onRunCreated?.(runId);
+    onRunStatus?.('failed');
+    notifyRunsChanged();
+    handlers.onError(new Error('Hosted Vercel runtime currently supports OpenAI API chat only.'));
+    return;
+  }
+
+  const runId = `cloud-${randomUUID()}`;
+  const emitStatus = (status: ChatRunStatus) => {
+    onRunStatus?.(status);
+    notifyRunsChanged();
+  };
+  onRunCreated?.(runId);
+  emitStatus('queued');
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  cancelSignal?.addEventListener('abort', abort, { once: true });
+
+  try {
+    const messages = history
+      .filter((message) => message.role === 'user' || message.role === 'assistant' || message.role === 'system')
+      .map((message) => ({
+        role: message.role,
+        content: truncateForTranscript(message.content),
+      }));
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-OD-Client': detectClientType() },
+      body: JSON.stringify({
+        messages,
+        model: model || undefined,
+        systemPrompt,
+        projectId: projectId ?? null,
+        conversationId: conversationId ?? null,
+        attachments: attachments ?? [],
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(text || `Hosted chat request failed (${response.status})`);
+    }
+    if (!response.body) throw new Error('Hosted chat returned no stream');
+
+    emitStatus('running');
+    handlers.onAgentEvent({ kind: 'status', label: 'working', detail: model || 'OpenAI API' });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    let fullText = '';
+    let completed = false;
+    const handleFrame = (frame: string) => {
+      const parsed = parseSseFrame(frame);
+      if (!parsed || parsed.kind !== 'event') return;
+      if (parsed.event === 'delta' && typeof parsed.data.text === 'string') {
+        fullText += parsed.data.text;
+        handlers.onDelta(parsed.data.text);
+        handlers.onAgentEvent({ kind: 'text', text: parsed.data.text });
+      } else if (parsed.event === 'end') {
+        completed = true;
+        emitStatus('succeeded');
+        handlers.onDone(fullText);
+      } else if (parsed.event === 'error') {
+        completed = true;
+        emitStatus('failed');
+        handlers.onError(new Error(
+          typeof parsed.data.message === 'string' ? parsed.data.message : 'Hosted chat failed',
+        ));
+      }
+    };
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      pending += decoder.decode(chunk.value, { stream: true });
+      const frames = pending.split('\n\n');
+      pending = frames.pop() ?? '';
+      for (const frame of frames) handleFrame(frame);
+    }
+    pending += decoder.decode();
+    if (pending.trim()) handleFrame(pending);
+    if (!completed && !controller.signal.aborted) {
+      emitStatus('failed');
+      handlers.onError(createGenericDaemonDisconnectError());
+    }
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') return;
+    emitStatus('failed');
+    handlers.onError(error instanceof Error ? error : new Error(String(error)));
+  } finally {
+    signal.removeEventListener('abort', abort);
+    cancelSignal?.removeEventListener('abort', abort);
+  }
 }
 
 export interface DaemonReattachOptions {
@@ -720,6 +850,7 @@ export async function streamViaDaemon({
   handlers,
   projectId,
   conversationId,
+  systemPrompt,
   sessionMode,
   userMessageId,
   assistantMessageId,
@@ -750,6 +881,24 @@ export async function streamViaDaemon({
   taskExecutionId,
   onStrategyTaskSettled,
 }: DaemonStreamOptions): Promise<void> {
+  if (await isHostedCloudRuntime()) {
+    await streamViaHostedCloud({
+      agentId,
+      history,
+      signal,
+      cancelSignal,
+      handlers,
+      projectId,
+      conversationId,
+      systemPrompt,
+      model,
+      byokProvider,
+      attachments,
+      onRunCreated,
+      onRunStatus,
+    });
+    return;
+  }
   const emitRunStatus = (status: ChatRunStatus) => {
     onRunStatus?.(status);
     notifyRunsChanged();

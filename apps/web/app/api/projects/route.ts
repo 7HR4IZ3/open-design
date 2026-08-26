@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
   attachSession,
+  CLOUD_PERSONAL_WORKSPACE_ID,
   CloudStoreUnavailable,
   readSessionJson,
   requestSession,
@@ -25,7 +26,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = requestSession(request);
   try {
-    const body = await request.json() as { id?: string; name?: string; skillId?: string | null; designSystemId?: string | null; pendingPrompt?: string };
+    const body = await request.json() as Partial<CloudProject>;
     const name = body.name?.trim();
     if (!name) return NextResponse.json({ error: 'name is required' }, { status: 400 });
     const now = Date.now();
@@ -37,6 +38,13 @@ export async function POST(request: Request) {
       createdAt: now,
       updatedAt: now,
       ...(body.pendingPrompt ? { pendingPrompt: body.pendingPrompt } : {}),
+      ...(body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+        ? { metadata: body.metadata }
+        : {}),
+      ...(body.appliedPluginSnapshotId ? { appliedPluginSnapshotId: body.appliedPluginSnapshotId } : {}),
+      ...(body.customInstructions ? { customInstructions: body.customInstructions } : {}),
+      workspaceId: CLOUD_PERSONAL_WORKSPACE_ID,
+      workspaceVisibility: 'personal',
     };
     const projects = await readSessionJson<CloudProject[]>(session.id, 'projects', []);
     projects.unshift(project);

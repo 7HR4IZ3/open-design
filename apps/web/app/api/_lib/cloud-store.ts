@@ -1,13 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
+import type { ProjectFile, WorkspaceCollabContext } from '@open-design/contracts';
 
-export type CloudConversation = {
-  id: string;
-  projectId: string;
-  title: string | null;
-  createdAt: number;
-  updatedAt: number;
-};
+export const CLOUD_PERSONAL_WORKSPACE_ID = 'personal-vercel';
+export const CLOUD_PERSONAL_MEMBER_ID = 'member-vercel';
 
 export type CloudProject = {
   id: string;
@@ -17,18 +13,56 @@ export type CloudProject = {
   createdAt: number;
   updatedAt: number;
   pendingPrompt?: string;
+  metadata?: Record<string, unknown>;
+  appliedPluginSnapshotId?: string;
+  customInstructions?: string;
+  workspaceId?: string | null;
+  workspaceVisibility?: 'personal' | 'team';
+};
+
+export type CloudConversation = {
+  id: string;
+  projectId: string;
+  title: string | null;
+  sessionMode?: string;
+  messageCount?: number;
+  createdAt: number;
+  updatedAt: number;
+  latestRun?: {
+    status: string;
+    startedAt?: number;
+    endedAt?: number;
+    durationMs?: number;
+  };
+};
+
+export type CloudMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdAt: number;
+  [key: string]: unknown;
+};
+
+export type CloudFileRecord = {
+  file: ProjectFile;
+  content: string;
+  encoding?: 'base64';
 };
 
 export class CloudStoreUnavailable extends Error {
   constructor() {
-    super('Cloud storage is not configured. Provision a Vercel KV/Upstash store and set KV_REST_API_URL and KV_REST_API_TOKEN.');
+    super('Cloud storage is not configured. Provision a Vercel KV/Upstash store and set KV_REST_API_URL/KV_REST_API_TOKEN or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN.');
     this.name = 'CloudStoreUnavailable';
   }
 }
 
 function storageConfig(): { url: string; token: string } {
-  const url = process.env.KV_REST_API_URL?.replace(/\/$/, '');
-  const token = process.env.KV_REST_API_TOKEN;
+  const url = (
+    process.env.KV_REST_API_URL
+    ?? process.env.UPSTASH_REDIS_REST_URL
+  )?.replace(/\/$/, '');
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) throw new CloudStoreUnavailable();
   return { url, token };
 }
@@ -68,6 +102,32 @@ export function attachSession(response: NextResponse, session: { id: string; isN
   return response;
 }
 
+export function cloudPersonalWorkspaceContext(): WorkspaceCollabContext {
+  return {
+    workspaceId: CLOUD_PERSONAL_WORKSPACE_ID,
+    workspaceType: 'personal',
+    workspaceMemberId: CLOUD_PERSONAL_MEMBER_ID,
+    role: 'owner',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+    billingState: 'free',
+    planId: null,
+    providerMode: 'personal_byok',
+    seatSummary: { seatLimit: 1, usedSeats: 1, availableSeats: 0, isSeatFull: false },
+    permissions: {
+      canManageMembers: false,
+      canManageBilling: false,
+      canInviteMembers: false,
+      canManageAutoRecharge: false,
+      canShareProjects: false,
+      canWriteSyncedFiles: false,
+      canViewWorkspaceSettings: false,
+      canManageSharedResources: false,
+    },
+    workspaceName: 'Personal workspace',
+  };
+}
+
 export async function readSessionJson<T>(sessionId: string, name: string, fallback: T): Promise<T> {
   const value = await command<string | null>('GET', `open-design:${sessionId}:${name}`);
   return value ? JSON.parse(value) as T : fallback;
@@ -75,4 +135,8 @@ export async function readSessionJson<T>(sessionId: string, name: string, fallba
 
 export async function writeSessionJson(sessionId: string, name: string, value: unknown): Promise<void> {
   await command('SET', `open-design:${sessionId}:${name}`, JSON.stringify(value));
+}
+
+export async function deleteSessionJson(sessionId: string, name: string): Promise<void> {
+  await command('DEL', `open-design:${sessionId}:${name}`);
 }

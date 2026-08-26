@@ -225,7 +225,7 @@ export function MobileScreenCanvas({
     event.currentTarget.setPointerCapture(event.pointerId);
   }, [pan]);
 
-  const handleScreenPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, screen: MobileScreen) => {
+  const handleScreenPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, screen: MobileScreen) => {
     event.stopPropagation();
     selectScreen(screen);
     dragRef.current = {

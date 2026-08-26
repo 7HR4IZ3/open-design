@@ -31,6 +31,7 @@ import type {
   ProjectKind,
   ProjectMetadata,
   ProjectPlatform,
+  ProjectPlatformMode,
   ProjectTemplate,
   MediaProviderCredentials,
   PromptTemplateSummary,
@@ -328,6 +329,7 @@ export function NewProjectPanel({
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [tabScroll, setTabScroll] = useState({ left: false, right: false });
   const [name, setName] = useState('');
+  const [platformMode, setPlatformMode] = useState<ProjectPlatformMode>('web');
   // Design-system selection is now an *array* internally so the same
   // component can drive both single-select and multi-select modes without
   // duplicating state. Single-select coerces to length 0/1.
@@ -728,6 +730,7 @@ export function NewProjectPanel({
     const metadata = buildMetadata({
       tab,
       mediaSurface,
+      platformMode,
       fidelity,
       platformTargets,
       includeLandingPage,
@@ -918,6 +921,8 @@ export function NewProjectPanel({
             onChange={(e) => setName(e.target.value)}
           />
         </div>
+
+        <PlatformModePicker value={platformMode} onChange={setPlatformMode} />
 
         <div className="newproj-working-dir-row">
           <button
@@ -3074,9 +3079,48 @@ function OptionCards<T extends string | number>({
   );
 }
 
+function PlatformModePicker({
+  value,
+  onChange,
+}: {
+  value: ProjectPlatformMode;
+  onChange: (value: ProjectPlatformMode) => void;
+}) {
+  return (
+    <div className="newproj-platform-mode" data-testid="new-project-platform-mode">
+      <div className="newproj-label">Platform</div>
+      <div className="newproj-platform-mode-options" role="radiogroup" aria-label="Project platform">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === 'web'}
+          data-testid="new-project-platform-web"
+          className={`newproj-platform-mode-card${value === 'web' ? ' active' : ''}`}
+          onClick={() => onChange('web')}
+        >
+          <span className="newproj-platform-mode-icon"><Icon name="globe" size={16} /></span>
+          <span><strong>Web project</strong><small>Responsive browser experience</small></span>
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === 'mobile'}
+          data-testid="new-project-platform-mobile"
+          className={`newproj-platform-mode-card${value === 'mobile' ? ' active' : ''}`}
+          onClick={() => onChange('mobile')}
+        >
+          <span className="newproj-platform-mode-icon"><Icon name="smartphone" size={16} /></span>
+          <span><strong>Mobile project</strong><small>Multi-screen, phone-first canvas</small></span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function buildMetadata(input: {
   tab: CreateTab;
   mediaSurface: MediaSurface;
+  platformMode: ProjectPlatformMode;
   fidelity: 'wireframe' | 'high-fidelity';
   platformTargets: NewProjectPlatform[];
   includeLandingPage: boolean;
@@ -3105,14 +3149,21 @@ function buildMetadata(input: {
         : input.tab;
   const selectedPlatforms = normalizeSelectedPlatforms(input.platformTargets);
   const concreteTargets = platformTargetsFor(selectedPlatforms);
-  const canIncludeOsWidgets = platformTargetsSupportOsWidgets(concreteTargets);
+  const mobileTargets = concreteTargets.some((target) =>
+    target === 'mobile-ios' || target === 'mobile-android' || target === 'tablet',
+  )
+    ? concreteTargets
+    : ['mobile-ios', 'mobile-android'] as ProjectPlatform[];
+  const resolvedTargets = input.platformMode === 'mobile' ? mobileTargets : concreteTargets;
+  const canIncludeOsWidgets = platformTargetsSupportOsWidgets(resolvedTargets);
   const surfaceOptions = {
     ...(input.includeLandingPage ? { includeLandingPage: true } : {}),
     ...(input.includeOsWidgets && canIncludeOsWidgets ? { includeOsWidgets: true } : {}),
   };
   const base = {
-    platform: selectedPlatforms[0],
-    platformTargets: concreteTargets,
+    platformMode: input.platformMode,
+    platform: resolvedTargets[0],
+    platformTargets: resolvedTargets,
     ...surfaceOptions,
   };
   const inspirations = input.inspirationIds.length > 0
@@ -3130,7 +3181,7 @@ function buildMetadata(input: {
     };
   }
   if (input.tab === 'deck') {
-    return { kind, speakerNotes: input.speakerNotes, ...inspirations };
+    return { kind, platformMode: input.platformMode, speakerNotes: input.speakerNotes, ...inspirations };
   }
   if (input.tab === 'template') {
     if (input.templateId == null) {
@@ -3153,6 +3204,7 @@ function buildMetadata(input: {
       const imageModel = input.imageModel.trim();
       return {
         kind,
+        platformMode: input.platformMode,
         ...(imageModel ? { imageModel } : {}),
         imageAspect: input.imageAspect,
         ...buildPromptTemplateMetadata(input.promptTemplate),
@@ -3163,6 +3215,7 @@ function buildMetadata(input: {
       const videoModel = input.videoModel.trim();
       return {
         kind,
+        platformMode: input.platformMode,
         ...(videoModel ? { videoModel } : {}),
         videoAspect: input.videoAspect,
         videoLength: input.videoLength,
@@ -3173,6 +3226,7 @@ function buildMetadata(input: {
     const audioModel = input.audioModel.trim();
     return {
       kind,
+      platformMode: input.platformMode,
       audioKind: input.audioKind,
       ...(audioModel ? { audioModel } : {}),
       audioDuration: input.audioDuration,

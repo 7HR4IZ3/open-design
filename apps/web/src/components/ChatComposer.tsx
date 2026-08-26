@@ -295,6 +295,9 @@ interface Props {
   activeWorkspaceContext?: WorkspaceContextItem | null;
   initialWorkspaceContexts?: WorkspaceContextItem[];
   workspaceContexts?: WorkspaceContextItem[];
+  /** Selected mobile canvas screen; intentionally separate from file attachments. */
+  mobileScreenSelection?: WorkspaceContextItem | null;
+  onClearMobileScreenSelection?: () => void;
   // BYOK image-model picker shown above the textarea for protocols that
   // inject the daemon-side generate_image tool (SenseAudio, AIHubMix).
   // Hidden for every other BYOK tab so the composer stays clean. The
@@ -473,6 +476,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       activeWorkspaceContext = null,
       initialWorkspaceContexts = [],
       workspaceContexts = [],
+      mobileScreenSelection = null,
+      onClearMobileScreenSelection,
       byokApiProtocol,
       byokImageModel,
       onChangeByokImageModel,
@@ -2994,6 +2999,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               }}
             />
           ) : null}
+          {mobileScreenSelection ? (
+            <div className="mobile-screen-selection-chip" data-testid="mobile-screen-selection" title={mobileScreenSelection.path ?? mobileScreenSelection.label}>
+              <span className="mobile-screen-selection-chip__icon" aria-hidden><Icon name="smartphone" size={13} /></span>
+              <span className="mobile-screen-selection-chip__copy"><span>Selected screen</span><strong>{mobileScreenSelection.label}</strong><small>{mobileScreenSelection.path ?? mobileScreenSelection.id}</small></span>
+              <button type="button" onClick={onClearMobileScreenSelection} aria-label="Clear selected screen"><Icon name="close" size={11} /></button>
+            </div>
+          ) : null}
           {selectedWorkspaceContexts.length > 0 || stagedSkills.length > 0 || stagedMcpServers.length > 0 || stagedConnectors.length > 0 || staged.length > 0 || activeAppliedPlugin ? (
             <StagedRunContexts
               workspaceItems={selectedWorkspaceContexts}
@@ -3781,6 +3793,8 @@ function workspaceContextKindLabel(kind: WorkspaceContextItem['kind']): string {
       return 'Side chat';
     case 'live-artifact':
       return 'Live artifact';
+    case 'mobile-screen':
+      return 'Mobile screen';
     case 'file':
     default:
       return 'File';
@@ -5220,6 +5234,8 @@ function designToolboxWorkspaceKindLabel(
       return t('chat.designToolbox.context.sideChat');
     case 'live-artifact':
       return t('chat.designToolbox.context.liveArtifact');
+    case 'mobile-screen':
+      return 'Mobile screen';
     case 'file':
     default:
       return t('chat.designToolbox.context.file');

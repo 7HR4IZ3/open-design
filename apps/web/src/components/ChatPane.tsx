@@ -730,6 +730,8 @@ interface Props {
   activeWorkspaceContext?: WorkspaceContextItem | null;
   initialWorkspaceContexts?: WorkspaceContextItem[];
   workspaceContexts?: WorkspaceContextItem[];
+  mobileScreenSelection?: WorkspaceContextItem | null;
+  onClearMobileScreenSelection?: () => void;
   currentSkillId?: string | null;
   onProjectSkillChange?: (skillId: string | null) => void;
   researchAvailable?: boolean;
@@ -1044,6 +1046,8 @@ export function ChatPane({
   activeWorkspaceContext,
   initialWorkspaceContexts = [],
   workspaceContexts = [],
+  mobileScreenSelection = null,
+  onClearMobileScreenSelection,
   currentSkillId = null,
   onProjectSkillChange,
   researchAvailable,
@@ -2516,6 +2520,8 @@ export function ChatPane({
       activeWorkspaceContext={activeWorkspaceContext}
       initialWorkspaceContexts={initialWorkspaceContexts}
       workspaceContexts={workspaceContexts}
+      mobileScreenSelection={mobileScreenSelection}
+      onClearMobileScreenSelection={onClearMobileScreenSelection}
       byokApiProtocol={byokApiProtocol}
       byokImageModel={byokImageModel}
       onChangeByokImageModel={onChangeByokImageModel}
@@ -5095,6 +5101,8 @@ function workspaceContextKindLabel(kind: WorkspaceContextItem['kind']): string {
       return 'Side chat';
     case 'live-artifact':
       return 'Live artifact';
+    case 'mobile-screen':
+      return 'Mobile screen';
     case 'file':
     default:
       return 'File';

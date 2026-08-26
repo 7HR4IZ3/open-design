@@ -27,6 +27,7 @@ export function workspaceContextKindLabel(kind: WorkspaceContextItem['kind']): s
     case 'terminal': return 'Terminal';
     case 'side-chat': return 'Side chat';
     case 'live-artifact': return 'Live artifact';
+    case 'mobile-screen': return 'Mobile screen';
     case 'file':
     default: return 'File';
   }

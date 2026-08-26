@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 139123)
-Total output lines: 13244
+Warning: truncated output (original token count: 139396)
+Total output lines: 13267
 
 import {
   startTransition,
@@ -228,7 +228,6 @@ import type {
   WorkspaceCollabContext,
   WorkspaceContextItem,
 } from '@open-design/contracts';
-import { mergeRunContextSelections } from '@open-design/contracts';
 import scenarioStyles from './ProjectScenarioControl.module.css';
 import type {
   AgentEvent,
@@ -1804,6 +1803,30 @@ export function reconcileProjectDetail(
     return routedProject;
   }
   return authoritativeName ? { ...detail, name: authoritativeName } : detail;
+}
+
+function mergeRunContextSelections(
+  ...contexts: Array<RunContextSelection | undefined>
+): RunContextSelection {
+  const skillIds = new Set<string>();
+  const pluginIds = new Set<string>();
+  const mcpServerIds = new Set<string>();
+  const connectorIds = new Set<string>();
+  const workspaceItems = new Map<string, WorkspaceContextItem>();
+  for (const context of contexts) {
+    for (const id of context?.skillIds ?? []) skillIds.add(id);
+    for (const id of context?.pluginIds ?? []) pluginIds.add(id);
+    for (const id of context?.mcpServerIds ?? []) mcpServerIds.add(id);
+    for (const id of context?.connectorIds ?? []) connectorIds.add(id);
+    for (const item of context?.workspaceItems ?? []) workspaceItems.set(item.id, item);
+  }
+  return {
+    ...(skillIds.size > 0 ? { skillIds: [...skillIds] } : {}),
+    ...(pluginIds.size > 0 ? { pluginIds: [...pluginIds] } : {}),
+    ...(mcpServerIds.size > 0 ? { mcpServerIds: [...mcpServerIds] } : {}),
+    ...(connectorIds.size > 0 ? { connectorIds: [...connectorIds] } : {}),
+    ...(workspaceItems.size > 0 ? { workspaceItems: [...workspaceItems.values()] } : {}),
+  };
 }
 
 export function ProjectView({
@@ -3512,7 +3535,7 @@ export function ProjectView({
   const handleMobileEditorMetadataChange = useCallback(async (
     mobileEditor: ProjectMetadata['mobileEditor'],
   ) => {
-    if (!mobileEditor || projectMutationReadOnly) return;
+    if (!mobileEditor || !currentProject.metadata || projectMutationReadOnly) return;
     const updated = await patchProject(
       project.id,
       {
@@ -3790,36 +3813,7 @@ export function ProjectView({
       // silently replace unrelated project files.
       const updatesExplicitlyIdentifiedFile =
         Boolean(art.identifier?.trim()) && existing.has(fileName);
-      let collisionFileName = fileName;
-      let n = 2;
-      while (
-        existing.has(collisionFileName) &&
-        savedArtifactRef.current !== collisionFileName
-      ) {
-        collisionFileName = `${baseName}-${n}${ext}`;
-        n += 1;
-      }
-      if (!updatesExplicitlyIdentifiedFile) fileName = collisionFileName;
-      if (ext === '.html') {
-        const pointerProjectFiles = filterProjectFilesByMinMtime(
-          currentProjectFiles,
-          options.pointerMinMtime,
-        );
-        const pointerTarget = resolveHtmlPointerArtifactTarget({
-          content: artifactToPersist.html,
-          candidateFileName: collisionFileName,
-          projectFiles: pointerProjectFiles,
-        });
-        if (pointerTarget) {
-          if (savedArtifactRef.current === pointerTarget) {
-            return { ok: true as const, fileName: pointerTarget };
-          }
-          savedArtifactRef.current = pointerTarget;
-          requestOpenFile(pointerTarget);
-          return { ok: true as const, fileName: pointerTarget };
-        }
-      }
-      // Pre-write structural gate for HTML…59123 tokens truncated…pshot.status === 'running' || snapshot.status === 'queued') continue;
+      let c…59396 tokens truncated…pshot.status === 'running' || snapshot.status === 'queued') continue;
           const endedAt = snapshot.endedAt ?? Date.now();
           setActivePluginActionPaths((prev) => {
             const next = new Set(prev);

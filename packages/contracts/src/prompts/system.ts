@@ -660,7 +660,9 @@ function platformLines(
   metadata: ProjectMetadata,
 ): string[] {
   const out: string[] = [];
-  out.push('- **platformMode**: ' + (metadata.platformMode ?? 'web'));
+  if (metadata.platformMode) {
+    out.push('- **platformMode**: ' + metadata.platformMode);
+  }
   if (metadata.platform) {
     out.push(`- **platform**: ${metadata.platform}`);
   } else if (metadata.kind === 'prototype' || metadata.kind === 'template' || metadata.kind === 'other') {

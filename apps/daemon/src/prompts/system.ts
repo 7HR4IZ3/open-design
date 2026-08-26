@@ -1591,7 +1591,9 @@ function renderMetadataBlock(
       : 'These are the structured choices the user made (or skipped) when creating this project. Treat known fields as authoritative. Missing fields are unresolved facts, not mandatory questions; infer reasonable defaults and clarify only when an answer would materially change the result.',
   );
   lines.push('');
-  lines.push('- **platformMode**: ' + (metadata.platformMode ?? 'web'));
+  if (metadata.platformMode) {
+    lines.push('- **platformMode**: ' + metadata.platformMode);
+  }
   lines.push(`- **kind**: ${metadata.kind}`);
   if (metadata.platform) {
     lines.push(`- **platform**: ${metadata.platform}`);

@@ -193,8 +193,8 @@ export function normalizeMobileScreenRecord(value: unknown): MobileScreenRecord 
     height,
     orientation,
     deviceFrame,
-    ...(transition === undefined ? {} : { transition }),
-    ...(routeKey === undefined ? {} : { routeKey }),
+    ...(transition === undefined || transition === null ? {} : { transition }),
+    ...(routeKey === undefined || routeKey === null ? {} : { routeKey }),
     createdAt,
     updatedAt,
   };
@@ -326,8 +326,8 @@ export function reconcileMobileScreenRecords(
   input: readonly unknown[] | ReconcileMobileScreenRecordsInput,
   availableFiles?: readonly string[],
 ): MobileScreenRecord[] {
-  const recordsInput = Array.isArray(input) ? input : input.records;
-  const filesInput = Array.isArray(input) ? availableFiles : input.availableFiles;
+  const recordsInput: readonly unknown[] = 'records' in input ? input.records : input;
+  const filesInput: readonly string[] | undefined = 'records' in input ? input.availableFiles : availableFiles;
   const available = filesInput === undefined
     ? undefined
     : new Set(
@@ -356,26 +356,14 @@ export function reconcileMobileScreenRecords(
     if (reconciled.length >= MOBILE_MAX_SCREENS) break;
   }
 
-  if (reconciled.length > 0 || available === undefined) return reconciled;
+  if (available === undefined) return reconciled;
 
   for (const file of available) {
     if (reconciled.length >= MOBILE_MAX_SCREENS) break;
+    if (seenFiles.has(file)) continue;
     const id = mobileScreenIdForFile(file, seenIds);
     const position = findAvailableMobileScreenPosition(
-      {
-        id,
-        file,
-        name: mobileScreenNameForFile(file),
-        order: reconciled.length,
-        x: 0,
-        y: 0,
-        width: MOBILE_DEFAULT_SCREEN_WIDTH,
-        height: MOBILE_DEFAULT_SCREEN_HEIGHT,
-        orientation: 'portrait',
-        deviceFrame: 'generic-phone',
-        createdAt: 0,
-        updatedAt: 0,
-      },
+      { width: MOBILE_DEFAULT_SCREEN_WIDTH, height: MOBILE_DEFAULT_SCREEN_HEIGHT },
       reconciled,
     );
     const record: MobileScreenRecord = {

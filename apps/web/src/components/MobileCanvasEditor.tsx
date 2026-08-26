@@ -434,6 +434,7 @@ export function MobileCanvasEditor({
 
   const selected = screens.find((screen) => screen.id === selectedScreenId) ?? screens[0] ?? null;
   const flowScreen = screens.find((screen) => screen.id === flowPreviewId) ?? screens[0] ?? null;
+  const flowHtml = flowScreen ? sources[flowScreen.id] ?? '' : '';
   const zoomLabel = `${Math.round(editor.zoom * 100)}%`;
   const updateSelectedScreen = useCallback((patch: Partial<MobileScreenRecord>) => {
     const current = screens.find((screen) => screen.id === selectedScreenId);
@@ -662,7 +663,7 @@ export function MobileCanvasEditor({
           <div className="mobile-flow-backdrop" onClick={() => setFlowPreviewId(null)} />
           <div className="mobile-flow-dialog">
             <div className="mobile-flow-header"><div><strong>Flow preview</strong><span>Tap links to move through the experience</span></div><button type="button" onClick={() => setFlowPreviewId(null)} aria-label="Close flow preview"><Icon name="close" size={16} /></button></div>
-            <div key={flowScreen.id} className={`mobile-flow-device transition-${flowScreen.transition ?? 'none'}`}><div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div><div className="mobile-device-screen"><iframe ref={flowFrameRef} title={`${flowScreen.name} flow preview`} sandbox="allow-scripts allow-forms" srcDoc={sources[flowScreen.id] ? buildSrcdoc(htmlWithMobileRouteBridge(sources[flowScreen.id], flowScreen.id), { baseHref: projectRawUrl(projectId, flowScreen.file, workspaceContext) }) : ''} /></div></div>
+            <div key={flowScreen.id} className={`mobile-flow-device transition-${flowScreen.transition ?? 'none'}`}><div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div><div className="mobile-device-screen"><iframe ref={flowFrameRef} title={`${flowScreen.name} flow preview`} sandbox="allow-scripts allow-forms" srcDoc={flowHtml ? buildSrcdoc(htmlWithMobileRouteBridge(flowHtml, flowScreen.id), { baseHref: projectRawUrl(projectId, flowScreen.file, workspaceContext) }) : ''} /></div></div>
             <div className="mobile-flow-footer"><span>{screens.findIndex((screen) => screen.id === flowScreen.id) + 1} / {screens.length}</span><div>{screens.map((screen) => <button key={screen.id} type="button" className={screen.id === flowScreen.id ? 'active' : ''} onClick={() => { setFlowPreviewId(screen.id); selectScreen(screen); }}>{screen.name}</button>)}</div></div>
           </div>
         </div>

@@ -84,9 +84,7 @@ test('opencode args pass model-supported variants without changing the default a
   assert.equal(opencode.promptViaStdin, true);
   assert.equal(opencode.reasoningOptions, undefined);
   assert.deepEqual(opencode.listModels?.args, ['models', '--verbose']);
-  assert.equal(opencode.fallbackModels.find(
-    (model) => model.id === 'openai/gpt-5.6-sol',
-  )?.reasoningOptions, undefined);
+  assert.deepEqual(opencode.fallbackModels.map((model) => model.id), ['default']);
   assert.deepEqual(opencode.helpArgs, ['run', '--help']);
   assert.deepEqual(opencode.capabilityFlags?.['--dangerously-skip-permissions'], 'skipPermissions');
   assert.equal(baseArgs.includes('-'), false);
@@ -220,6 +218,35 @@ test('opencode parses live verbose variant metadata and only forwards variants a
     ]);
   } finally {
     rememberLiveModels('opencode', previous);
+  }
+});
+
+test('opencode refreshes the provider catalog before using its cached list', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'od-agents-opencode-models-'));
+  try {
+    const opencodeBin = join(dir, 'opencode');
+    writeFileSync(
+      opencodeBin,
+      `#!/bin/sh
+if [ "$1" = "models" ] && [ "$3" = "--refresh" ]; then exit 1; fi
+if [ "$1" = "models" ]; then
+  printf '%s\\n' 'local/provider-model'
+  printf '%s\\n' '{ "variants": { "high": {} } }'
+  exit 0
+fi
+exit 1
+`,
+    );
+    chmodSync(opencodeBin, 0o755);
+
+    const models = await opencode.fetchModels?.(opencodeBin, {});
+    assert.deepEqual(models?.map((model) => model.id), ['default', 'local/provider-model']);
+    assert.deepEqual(models?.[1]?.reasoningOptions, [
+      { id: 'default', label: 'Default' },
+      { id: 'high', label: 'high' },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

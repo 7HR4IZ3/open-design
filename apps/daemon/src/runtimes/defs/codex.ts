@@ -1,4 +1,8 @@
-import { DEFAULT_MODEL_OPTION, clampCodexReasoning } from './shared.js';
+import {
+  DEFAULT_MODEL_OPTION,
+  clampCodexReasoning,
+  execAgentFile,
+} from './shared.js';
 import type { RuntimeModelOption } from '../types.js';
 import type { RuntimeAgentDef } from '../types.js';
 
@@ -109,9 +113,34 @@ export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | nu
   return out.length > 1 ? out : null;
 }
 
-const GPT_5_5_SERVICE_TIER_OPTIONS: RuntimeModelOption[] = [
-  { id: 'priority', label: 'Fast' },
-];
+async function fetchCodexModels(
+  resolvedBin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<RuntimeModelOption[] | null> {
+  // `debug models` refreshes the account-aware catalog. If that network
+  // refresh is unavailable, `--bundled` still gives us the catalog shipped
+  // with this exact Codex binary. Never replace either result with a stale
+  // hand-maintained list: model availability depends on the CLI release and
+  // the authenticated account.
+  const probes = [
+    { args: ['debug', 'models'], timeout: 15_000 },
+    { args: ['debug', 'models', '--bundled'], timeout: 5_000 },
+  ];
+  for (const probe of probes) {
+    try {
+      const { stdout } = await execAgentFile(resolvedBin, probe.args, {
+        env,
+        timeout: probe.timeout,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const parsed = parseCodexDebugModels(String(stdout));
+      if (parsed && parsed.length > 0) return parsed;
+    } catch {
+      // Try the bundled catalog after a refresh/auth/network failure.
+    }
+  }
+  return null;
+}
 
 // Codex applies `shell_environment_policy` again when its shell tool starts a
 // command. That second boundary is independent from the environment the daemon
@@ -197,35 +226,22 @@ export const codexAgentDef = {
     name: 'Codex CLI',
     bin: 'codex',
     versionArgs: ['--version'],
-    // Codex exposes its installed model catalog through `debug models` on
-    // recent CLIs. Older builds fall back to these static hints.
+    // Codex exposes its account-aware model catalog through `debug models`.
     listModels: {
       args: ['debug', 'models'],
       parse: parseCodexDebugModels,
       timeoutMs: 5000,
     },
+    fetchModels: fetchCodexModels,
     authProbe: {
       args: ['login', 'status'],
       timeoutMs: 5000,
     },
-    fallbackModels: [
-      DEFAULT_MODEL_OPTION,
-      {
-        id: 'gpt-5.5',
-        label: 'gpt-5.5',
-        additionalSpeedTiers: ['fast'],
-        serviceTierOptions: GPT_5_5_SERVICE_TIER_OPTIONS,
-      },
-      { id: 'gpt-5.4', label: 'gpt-5.4' },
-      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { id: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-      { id: 'gpt-5.1', label: 'gpt-5.1' },
-      { id: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-      { id: 'gpt-5-codex', label: 'gpt-5-codex' },
-      { id: 'gpt-5', label: 'gpt-5' },
-      { id: 'o3', label: 'o3' },
-      { id: 'o4-mini', label: 'o4-mini' },
-    ],
+    // A missing/failed catalog must not turn into an inaccurate list of
+    // account-dependent model guesses. The CLI's configured default remains
+    // usable, and explicit model ids are still accepted through the custom
+    // model path after validation.
+    fallbackModels: [DEFAULT_MODEL_OPTION],
     reasoningOptions: [
       { id: 'default', label: 'Default' },
       { id: 'none', label: 'None' },

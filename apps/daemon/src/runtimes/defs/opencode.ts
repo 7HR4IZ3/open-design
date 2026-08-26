@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_OPTION } from './shared.js';
+import { DEFAULT_MODEL_OPTION, execAgentFile } from './shared.js';
 import {
   OPENCODE_PERMISSION_CAPABILITY,
   appendOpenCodePermissionBypass,
@@ -16,28 +16,6 @@ function reasoningOptions(ids: readonly string[]): RuntimeModelOption[] {
     ...ids.map((id) => ({ id, label: id })),
   ];
 }
-
-const OPENCODE_FALLBACK_MODELS: RuntimeModelOption[] = [
-  DEFAULT_MODEL_OPTION,
-  {
-    id: 'anthropic/claude-sonnet-4-5',
-    label: 'anthropic/claude-sonnet-4-5',
-  },
-  {
-    id: 'openai/gpt-5.6-sol',
-    label: 'openai/gpt-5.6-sol',
-  },
-  {
-    id: 'openai/gpt-5.6-terra',
-    label: 'openai/gpt-5.6-terra',
-  },
-  {
-    id: 'openai/gpt-5.6-luna',
-    label: 'openai/gpt-5.6-luna',
-  },
-  { id: 'openai/gpt-5', label: 'openai/gpt-5' },
-  { id: 'google/gemini-2.5-pro', label: 'google/gemini-2.5-pro' },
-];
 
 function parseVerboseModelMetadata(
   lines: string[],
@@ -96,6 +74,33 @@ export function parseOpenCodeModels(stdout: string): RuntimeModelOption[] | null
   return models.length > 1 ? models : null;
 }
 
+async function fetchOpenCodeModels(
+  resolvedBin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<RuntimeModelOption[] | null> {
+  // OpenCode documents `--refresh` as the way to update its models.dev
+  // cache. Keep a cached read as a fallback for offline/private deployments,
+  // but never substitute a hand-maintained provider/model list.
+  const probes = [
+    { args: ['models', '--verbose', '--refresh'], timeout: 30_000 },
+    { args: ['models', '--verbose'], timeout: 15_000 },
+  ];
+  for (const probe of probes) {
+    try {
+      const { stdout } = await execAgentFile(resolvedBin, probe.args, {
+        env,
+        timeout: probe.timeout,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const parsed = parseOpenCodeModels(String(stdout));
+      if (parsed && parsed.length > 0) return parsed;
+    } catch {
+      // Try the cached catalog after a refresh/network/provider failure.
+    }
+  }
+  return null;
+}
+
 function supportsOpenCodeVariant(
   modelId: string | null | undefined,
   variant: string | null | undefined,
@@ -112,24 +117,23 @@ export const opencodeAgentDef = {
     fallbackBins: ['opencode'],
     versionArgs: ['--version'],
     ...OPENCODE_PERMISSION_CAPABILITY,
-    // `opencode models` prints `provider/model` per line. Real-world
-    // `opencode models` calls can take >8s (network round-trip to the
-    // provider registry), so the previous 8s budget timed out and fell back
-    // to the hardcoded `fallbackModels`, hiding the user's actual catalog.
-    // 15s matches the listModels budget the rest of the agent defs use
-    // (devin, hermes, kiro, kilo, kimi, trae-cli, vibe, reasonix).
+    // `opencode models --verbose` prints provider/model followed by the
+    // provider's JSON metadata. `fetchModels` refreshes models.dev first and
+    // then retries from the local cache if the deployment is offline.
     listModels: {
       args: ['models', '--verbose'],
       parse: parseOpenCodeModels,
       timeoutMs: 15_000,
     },
-    fallbackModels: OPENCODE_FALLBACK_MODELS,
+    fetchModels: fetchOpenCodeModels,
+    // A failed provider catalog is not evidence that these models exist for
+    // this installation. Keep only the configured OpenCode default until a
+    // real catalog is returned.
+    fallbackModels: [DEFAULT_MODEL_OPTION],
     // OpenCode 1.18.x exposes provider/model-specific variants. Detection
-    // reads the exact live variant keys from `models --verbose`. The fallback
-    // keeps Sol/Terra/Luna model ids usable during a catalog outage but does
-    // not guess their variants. Unknown model/variant pairs omit `--variant`
-    // rather than inventing a provider capability or preventing the base
-    // model from running.
+    // reads the exact live variant keys from `models --verbose`. Unknown
+    // model/variant pairs omit `--variant` rather than inventing a provider
+    // capability or preventing the base model from running.
     //
     // Prompt delivered via stdin (`opencode run` with no message argv) to
     // avoid Windows `spawn ENAMETOOLONG` while preserving OpenCode's

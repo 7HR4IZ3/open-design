@@ -165,6 +165,24 @@ function configuredAllowedDevHosts(): string[] {
 const nextConfig: NextConfig = {
   allowedDevOrigins: configuredAllowedDevHosts(),
   outputFileTracingRoot: WORKSPACE_ROOT,
+  // The hosted read-only catalog routes discover bundled SKILL.md and
+  // design-system files at runtime. Include those source files in traced
+  // Vercel functions; user-authored resources remain cloud-backed and are
+  // intentionally not read from the deployment filesystem.
+  outputFileTracingIncludes: {
+    '/api/skills': ['./skills/**/SKILL.md'],
+    '/api/skills/[id]': ['./skills/**/SKILL.md'],
+    '/api/design-templates': ['./design-templates/**/SKILL.md'],
+    '/api/design-templates/[id]': ['./design-templates/**/SKILL.md'],
+    '/api/design-systems': [
+      './design-systems/**/DESIGN.md',
+      './design-systems/**/manifest.json',
+    ],
+    '/api/design-systems/[id]': [
+      './design-systems/**/DESIGN.md',
+      './design-systems/**/manifest.json',
+    ],
+  },
   reactStrictMode: true,
   // Emit browser sourcemaps so packaged-runtime exceptions can be symbolicated
   // by PostHog. `tools/pack/src/web-sourcemaps.ts` runs after `next build`

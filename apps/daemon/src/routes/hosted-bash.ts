@@ -25,6 +25,8 @@ export interface RegisterHostedBashRoutesDeps {
   };
   http: { sendApiError: SendApiError };
   bash: HostedBashManager;
+  /** Hydrates the project view and, in hosted mode, its Supabase project row. */
+  ensureProject?: (projectId: string) => Promise<unknown>;
   authorizeProjectRequest: (
     req: Request,
     res: Response,
@@ -77,6 +79,7 @@ async function execute(
   res: Response,
   sendApiError: SendApiError,
   bash: HostedBashManager,
+  ensureProject: ((projectId: string) => Promise<unknown>) | undefined,
   projectId: string,
   body: unknown,
 ): Promise<void> {
@@ -86,6 +89,7 @@ async function execute(
     return;
   }
   try {
+    await ensureProject?.(projectId);
     const result = await bash.execute(projectId, parsed.command, parsed);
     res.json({
       ok: result.exitCode === 0,
@@ -118,7 +122,7 @@ export function registerHostedBashRoutes(
       grant.projectId,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    await execute(res, ctx.http.sendApiError, ctx.bash, grant.projectId, req.body);
+    await execute(res, ctx.http.sendApiError, ctx.bash, ctx.ensureProject, grant.projectId, req.body);
   });
 
   // The project-scoped endpoint is used by the local stdio MCP bridge, which
@@ -131,6 +135,6 @@ export function registerHostedBashRoutes(
       req.params.id,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    await execute(res, ctx.http.sendApiError, ctx.bash, req.params.id, req.body);
+    await execute(res, ctx.http.sendApiError, ctx.bash, ctx.ensureProject, req.params.id, req.body);
   });
 }

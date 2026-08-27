@@ -7472,7 +7472,7 @@ export function registerProjectUploadRoutes(app: Express, ctx: RegisterProjectUp
   const { handleProjectUpload } = ctx.uploads;
   const { PROJECTS_DIR } = ctx.paths;
   const { getProject, getWorkspaceProject, getWorkspaceProjectByProjectId } = ctx.projectStore;
-  const { readProjectFile } = ctx.projectFiles;
+  const { readProjectFile, writeProjectFile } = ctx.projectFiles;
   const { fs } = ctx.node;
   const authorizeProjectRequest =
     ctx.authorizeProjectRequest ??
@@ -7527,6 +7527,19 @@ export function registerProjectUploadRoutes(app: Express, ctx: RegisterProjectUp
           try {
             const stat = await fs.promises.stat(f.path);
             const rel = relDir ? `${relDir}/${f.filename}` : f.filename;
+            // Multer writes into the local project view first. Route the
+            // committed bytes through the project-file adapter as well so a
+            // hosted upload updates Supabase Storage and its manifest before
+            // the response tells the browser the file exists.
+            const body = await fs.promises.readFile(f.path);
+            await writeProjectFile(
+              PROJECTS_DIR,
+              req.params.id,
+              rel,
+              body,
+              { overwrite: true },
+              project?.metadata,
+            );
             out.push({
               name: rel,
               path: rel,

@@ -32,6 +32,7 @@ import {
 } from '../tool-tokens.js';
 import { scaffoldHyperFramesComposition } from '../media/hyperframes-scaffold.js';
 import { normalizePersistedAutomationWorkspaceScope } from '../automations/workspace-scope.js';
+import { hostedAuthPrincipalFromRequest } from '../hosted-auth.js';
 
 const LONG_MEDIA_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -625,7 +626,19 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
           }
         }
       }
-      const config = await writeAppConfig(RUNTIME_DATA_DIR, req.body);
+      const hostedOwnerId = hostedAuthPrincipalFromRequest(req)?.userId ?? null;
+      const configPatch = req.body && typeof req.body === 'object'
+        ? { ...req.body }
+        : req.body;
+      if (
+        hostedOwnerId
+        && configPatch
+        && typeof configPatch.orbit === 'object'
+        && !Array.isArray(configPatch.orbit)
+      ) {
+        configPatch.orbit = { ...configPatch.orbit, ownerId: hostedOwnerId };
+      }
+      const config = await writeAppConfig(RUNTIME_DATA_DIR, configPatch);
       orbitService.configure(config.orbit);
       onAppConfigWritten?.(config);
       res.json({ config });
@@ -723,7 +736,10 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
     try {
       const locale = typeof req.body?.locale === 'string' ? req.body.locale : null;
-      res.json(await orbitService.start('manual', { locale }));
+      res.json(await orbitService.start('manual', {
+        locale,
+        ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
+      }));
     } catch (err: any) {
       const status = err?.code === 'WORKSPACE_ACCESS_DENIED'
           ? 403

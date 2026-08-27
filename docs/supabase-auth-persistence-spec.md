@@ -18,12 +18,14 @@ Supabase is the hosted persistence boundary:
 - The daemon remains the policy enforcement point for agent execution and
   project access.
 
-The target architecture does not upload the SQLite database file: its logical
-schema and data-access operations are migrated to Postgres. During that
-migration, the hosted single-instance bridge may upload a consistent SQLite
-backup to a private Supabase Storage bucket so Render restarts do not erase the
-current metadata graph. The bridge is explicitly not a multi-replica database
-and remains a transitional compatibility path.
+The hosted implementation does not upload the SQLite database file. It keeps a
+synchronous in-memory SQLite compatibility cache for the existing repository
+call sites and mirrors each logical row to service-role-only Postgres tables.
+An existing local `app.sqlite` is accepted only as a one-time migration source
+when the remote row store is empty, then its SQLite artifacts are removed after
+the first successful flush. The row mirror is designed for one active daemon
+writer; native relational repositories can replace individual tables
+incrementally without changing the storage boundary.
 
 ## Non-goals
 
@@ -35,11 +37,14 @@ and remains a transitional compatibility path.
 
 ## Current branch boundary
 
-The branch currently has three independent state owners:
+The branch now has these state owners:
 
 1. The web client uses the daemon API for project operations.
-2. The daemon uses SQLite for metadata and local project storage for file bytes.
-3. Hosted Bash uses a project-scoped `just-bash` `InMemoryFs`.
+2. The daemon uses an in-memory SQLite compatibility cache with Supabase
+   Postgres as the durable metadata source; local project storage remains the
+   ephemeral rendering mirror in hosted mode.
+3. Hosted Bash uses a project-scoped `just-bash` `InMemoryFs` hydrated from and
+   flushed to the same Supabase project-file adapter.
 
 The hosted implementation must keep the in-memory filesystem as an execution
 cache, but hydrate it from and flush it to durable storage. Project routes must
@@ -193,7 +198,9 @@ Daemon-only variables:
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 SUPABASE_STORAGE_BUCKET
-SUPABASE_DB_URL
+SUPABASE_DB_TABLE
+SUPABASE_DB_STATE_TABLE
+SUPABASE_DB_FLUSH_INTERVAL_MS
 ```
 
 The service-role key must never use a `NEXT_PUBLIC_` prefix, be serialized in

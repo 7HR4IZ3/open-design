@@ -1,22 +1,23 @@
 # OpenDesign hosted Supabase setup
 
-The migration in `migrations/0001_hosted_persistence_foundation.sql` creates
-the Auth-owned project/file/workspace foundation plus private
-`open-design-projects` and `open-design-database` Storage buckets. Run it once
-from the Supabase SQL editor or with the Supabase CLI.
+Run `migrations/0001_hosted_persistence_foundation.sql` and
+`migrations/0002_daemon_postgres_metadata.sql` from the Supabase SQL editor or
+with the Supabase CLI. They create Auth-owned projects, private project-file
+Storage, file manifests, and the Postgres-backed daemon metadata mirror.
 
-For the current hosted Auth + file-storage slice, configure Render with:
+Configure Render with:
 
 ```text
 OD_HOST=0.0.0.0
 OD_HOSTED_AUTH_REQUIRED=1
 OD_PROJECT_STORAGE=supabase
-OD_DAEMON_DB=supabase-snapshot
+OD_DAEMON_DB=postgres
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<server-only-secret>
 SUPABASE_STORAGE_BUCKET=open-design-projects
-SUPABASE_DATABASE_BUCKET=open-design-database
-OD_DAEMON_DB_RESTORE=if-missing
+SUPABASE_DB_TABLE=daemon_table_rows
+SUPABASE_DB_STATE_TABLE=daemon_database_state
+SUPABASE_DB_FLUSH_INTERVAL_MS=15000
 NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED=1
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable-key>
@@ -26,15 +27,18 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable-key>
 use it in a `NEXT_PUBLIC_*` variable. The browser uses the publishable key and
 the daemon verifies its access token before project operations.
 
-`OD_DAEMON_DB=supabase-snapshot` is the transitional single-instance bridge:
-the daemon keeps its synchronous SQLite API, but uploads a consistent
-`app.sqlite` backup to the private `open-design-database` bucket, restores it
-on boot, flushes after mutations, and retries on a periodic interval. This
-makes the current metadata graph (conversations, messages, runs, tabs,
-deployments, and collaboration state) restart-safe on a single Render
-instance. It is not a multi-replica Postgres database; the eventual
-relational adapter and SQLite import path remain follow-up work.
+`OD_DAEMON_DB=postgres` keeps the daemon's existing synchronous repository
+interface over an in-memory SQLite compatibility cache. The cache is hydrated
+from `daemon_table_rows` on boot and flushed to Postgres after mutations, on a
+short debounce, periodically, and during shutdown. Conversations, messages,
+tabs, runs, deployments, collaboration rows, and future SQLite tables all use
+the same logical-row mirror, while `projects` and `project_files` also have
+explicit relational tables for ownership and file manifests.
 
-Set `OD_DAEMON_DB_RESTORE=always` only when the Supabase snapshot is the
-authoritative copy for an existing local data directory; the default
-`if-missing` mode leaves a usable local SQLite database in place.
+The daemon imports an existing local `app.sqlite` once when the Postgres row
+store is empty, then removes the local SQLite artifacts after the first
+successful flush. It never uploads the SQLite file to Supabase Storage.
+
+The service-role key belongs only in Render's server environment. The browser
+uses the publishable key; the daemon verifies its bearer token and checks
+project ownership before metadata, file, Bash, run, or deployment operations.

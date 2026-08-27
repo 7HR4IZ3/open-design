@@ -66,6 +66,7 @@ export type OrbitRunHandler = (request: {
   systemPrompt: string;
   template: OrbitTemplateSelection | null;
   workspaceScope: OrbitConfigPrefs['workspaceScope'];
+  ownerId: OrbitConfigPrefs['ownerId'];
 }) => Promise<OrbitRunHandlerStart>;
 
 type OrbitOutputLocale = 'en' | 'zh-CN' | 'zh-TW';
@@ -489,7 +490,7 @@ export class OrbitService {
 
   async start(
     trigger: 'manual' | 'scheduled',
-    options?: { locale?: string | null },
+    options?: { locale?: string | null; ownerId?: string | null },
   ): Promise<{ projectId: string; agentRunId: string }> {
     if (this.inflight && this.inflightProjectId && this.inflightAgentRunId) {
       return { projectId: this.inflightProjectId, agentRunId: this.inflightAgentRunId };
@@ -505,7 +506,7 @@ export class OrbitService {
 
   private async startRun(
     trigger: 'manual' | 'scheduled',
-    options?: { locale?: string | null },
+    options?: { locale?: string | null; ownerId?: string | null },
   ): Promise<{ projectId: string; agentRunId: string }> {
     if (!this.runHandler) throw new Error('Orbit agent runner is not configured');
 
@@ -530,6 +531,7 @@ export class OrbitService {
       systemPrompt,
       template: localizedTemplate,
       workspaceScope: this.config.workspaceScope ?? null,
+      ownerId: options?.ownerId ?? this.config.ownerId ?? null,
     });
 
     this.inflightProjectId = handlerStart.projectId;

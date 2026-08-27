@@ -12,6 +12,17 @@ import {
 
 export interface RegisterDaemonRoutesDeps {
   db: any;
+  databaseBackend?: 'sqlite' | 'supabase-postgres';
+  databasePersistence?: {
+    status(): {
+      backend: 'supabase-postgres';
+      persistent: true;
+      lastSuccessfulAt: number | null;
+      lastError: string | null;
+      dirty: boolean;
+    };
+    flushNow(options?: { force?: boolean }): Promise<void>;
+  } | null;
   paths: {
     PROJECT_ROOT: string;
     RESOURCE_ROOT: string;
@@ -34,6 +45,7 @@ export interface RegisterDaemonRoutesDeps {
 export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDeps): void {
   const { db, env, host, http, paths, sandboxRuntime } = deps;
   const { requireLocalDaemonRequest, sendApiError } = http;
+  const databaseBackend = deps.databaseBackend ?? 'sqlite';
 
   app.get('/api/daemon/status', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
@@ -43,6 +55,13 @@ export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDep
       bindHost: host,
       port: deps.getResolvedPort(),
       dataDir: paths.RUNTIME_DATA_DIR,
+      database: deps.databasePersistence?.status() ?? {
+        backend: databaseBackend,
+        persistent: false,
+        lastSuccessfulAt: null,
+        lastError: null,
+        dirty: false,
+      },
       mediaConfigDir: env.OD_MEDIA_CONFIG_DIR ?? null,
       sandboxMode: sandboxRuntime.enabled,
       sandbox: sandboxRuntime.enabled
@@ -62,6 +81,14 @@ export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDep
 
   app.get('/api/daemon/db', async (_req, res) => {
     try {
+      if (databaseBackend === 'supabase-postgres') {
+        return res.json({
+          ok: true,
+          backend: 'supabase-postgres',
+          persistent: true,
+          ...deps.databasePersistence?.status(),
+        });
+      }
       const { inspectSqliteDatabase } = await import('../storage/db-inspect.js');
       const file = path.join(paths.RUNTIME_DATA_DIR, 'app.sqlite');
       const report = await inspectSqliteDatabase({ db, file });
@@ -123,6 +150,14 @@ export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDep
 
   app.post('/api/daemon/db/verify', requireLocalDaemonRequest, async (req, res) => {
     try {
+      if (databaseBackend === 'supabase-postgres') {
+        return res.json({
+          ok: true,
+          backend: 'supabase-postgres',
+          persistent: true,
+          ...deps.databasePersistence?.status(),
+        });
+      }
       const { verifySqliteIntegrity } = await import('../storage/db-inspect.js');
       const quick = String(req.query.quick ?? '').toLowerCase();
       const report = verifySqliteIntegrity({ db, quick: quick === '1' || quick === 'true' });
@@ -134,6 +169,15 @@ export function registerDaemonRoutes(app: Express, deps: RegisterDaemonRoutesDep
 
   app.post('/api/daemon/db/vacuum', requireLocalDaemonRequest, async (_req, res) => {
     try {
+      if (databaseBackend === 'supabase-postgres') {
+        await deps.databasePersistence?.flushNow({ force: true });
+        return res.json({
+          ok: true,
+          backend: 'supabase-postgres',
+          persistent: true,
+          ...deps.databasePersistence?.status(),
+        });
+      }
       const { inspectSqliteDatabase } = await import('../storage/db-inspect.js');
       const file = path.join(paths.RUNTIME_DATA_DIR, 'app.sqlite');
       const before = await inspectSqliteDatabase({ db, file });

@@ -27,6 +27,7 @@ import {
   normalizePersistedAutomationWorkspaceScope,
 } from '../automations/workspace-scope.js';
 import type { PathDeps, RouteDeps } from '../server-context.js';
+import { hostedAuthPrincipalFromRequest } from '../hosted-auth.js';
 
 export interface RegisterRoutineRoutesDeps extends RouteDeps<'db' | 'routines'> {
   paths: Pick<PathDeps, 'RUNTIME_DATA_DIR'>;
@@ -264,6 +265,18 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     });
   }
 
+  function assertRoutineOwner(req: any, row: any): void {
+    const principal = hostedAuthPrincipalFromRequest(req);
+    if (!principal) return;
+    if (row.ownerId !== principal.userId) {
+      throw new AutomationWorkspaceScopeError(
+        'WORKSPACE_ACCESS_DENIED',
+        'routine not found',
+        false,
+      );
+    }
+  }
+
   app.get('/api/automation-templates', async (_req, res) => {
     try {
       res.json({
@@ -328,7 +341,9 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
   app.get('/api/routines', async (req, res) => {
     try {
       const claimed = claimedWorkspaceScope(req);
+      const hostedOwnerId = hostedAuthPrincipalFromRequest(req)?.userId ?? null;
       const routines = listRoutines(db).flatMap((row) => {
+        if (hostedOwnerId && row.ownerId !== hostedOwnerId) return [];
         const persistedWorkspaceId = persistedRoutineWorkspaceId(row);
         const persistedScope = row.projectMode === 'reuse'
           ? null
@@ -391,6 +406,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
         projectId: body.target.mode === 'reuse' ? body.target.projectId : null,
         skillId: body.skillId ?? null,
         agentId: body.agentId ?? null,
+        ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
         contextJson: JSON.stringify(context),
         enabled: body.enabled !== false,
         createdAt: now,
@@ -418,6 +434,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const row = getRoutine(db, req.params.id);
       if (!row) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, row);
       const scope = await authorizeRoutineRecord(req, row);
       res.json({
         routine: exposeRoutineWorkspaceScope(routineFromDb(req.params.id)!, scope),
@@ -431,6 +448,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const existing = getRoutine(db, req.params.id);
       if (!existing) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, existing);
       const existingScope = await authorizeRoutineRecord(req, existing);
       let resultingScope = existingScope;
       const body = req.body || {};
@@ -503,6 +521,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const existing = getRoutine(db, req.params.id);
       if (!existing) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, existing);
       await authorizeRoutineRecord(req, existing);
       routineService?.unschedule(req.params.id);
       dbDeleteRoutine(db, req.params.id);
@@ -516,6 +535,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const existing = getRoutine(db, req.params.id);
       if (!existing) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, existing);
       // Execution is not a local membership decision. The routine/project
       // already persists its exact Workspace billing address; start the run
       // with that address and let the authenticated Vela backend make the
@@ -539,6 +559,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const existing = getRoutine(db, req.params.id);
       if (!existing) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, existing);
       await authorizeRoutineRecord(req, existing);
       const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
       res.json({ runs: listRoutineRuns(db, req.params.id, limit) });
@@ -551,6 +572,7 @@ export function registerRoutineRoutes(app: Express, ctx: RegisterRoutineRoutesDe
     try {
       const routine = getRoutine(db, req.params.id);
       if (!routine) return res.status(404).json({ error: 'routine not found' });
+      assertRoutineOwner(req, routine);
       await authorizeRoutineRecord(req, routine);
       const run = getRoutineRun(db, req.params.runId);
       if (!run || run.routineId !== req.params.id) {

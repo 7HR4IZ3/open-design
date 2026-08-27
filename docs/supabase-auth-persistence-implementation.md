@@ -4,7 +4,7 @@ This is the execution checklist for the companion specification.
 
 ## Current implementation checkpoint
 
-The current branch now contains the first hosted slice:
+The current branch now contains the hosted implementation:
 
 - opt-in Supabase Auth with email/password sign-in, sign-up, session restore,
   sign-out, bearer transport, and daemon token verification;
@@ -13,17 +13,19 @@ The current branch now contains the first hosted slice:
   mirroring for preview code, and explicit delete/write behavior;
 - project-scoped `just-bash` hydration and flush across daemon restarts when
   `OD_PROJECT_STORAGE=supabase` is enabled;
-- an explicit `OD_DAEMON_DB=supabase-snapshot` bridge that restores and uploads
-  consistent SQLite backups through a private Supabase database bucket, with
-  mutation-triggered and periodic flushes;
-- the hosted persistence foundation migration in
-  `supabase/migrations/0001_hosted_persistence_foundation.sql`.
+- an in-memory SQLite compatibility cache backed by Supabase Postgres logical
+  rows (`daemon_table_rows`), with legacy `app.sqlite` import and cleanup;
+- private Supabase Storage project files plus `project_files` manifests,
+  content hashes, revisions, ownership metadata, and the 50 MiB file limit;
+- project-file route wiring, upload/Figma synchronization, durable Bash
+  hydrate/flush, and a terminal agent-run persistence boundary;
+- the hosted migrations in `supabase/migrations/0001_hosted_persistence_foundation.sql`
+  and `0002_daemon_postgres_metadata.sql`.
 
-The daemon's complete metadata graph still runs on SQLite in this checkpoint,
-but the snapshot bridge makes that graph restart-safe for one active daemon
-writer. The Postgres tables below remain the relational migration foundation;
-they are not a claim that the synchronous call sites have already moved to
-Postgres or that multiple daemon replicas may write the same snapshot.
+The compatibility cache preserves the daemon's mature synchronous SQL call
+surface while the durable source of truth is Postgres. The hosted process does
+not create or upload `app.sqlite`; only a pre-existing local file is accepted
+as a one-time migration source when the remote row store is empty.
 
 ## Phase 0 — committed design baseline
 
@@ -54,58 +56,61 @@ Postgres or that multiple daemon replicas may write the same snapshot.
 ## Phase 3 — Postgres persistence
 
 - [x] Create the hosted persistence foundation migration.
-- [x] Add a single-instance SQLite snapshot bridge for hosted restart safety.
-- [ ] Port project metadata and ownership into the live daemon database path.
-- [ ] Port conversations, messages, tabs, and required run metadata.
-- [ ] Add ownership-aware queries and indexes.
-- [ ] Add RLS policies for direct Supabase access where applicable.
-- [ ] Add import/export tooling for existing SQLite data.
-- [ ] Keep a local SQLite adapter behind the same logical interface during the
-  migration window.
+- [x] Port project metadata and ownership into the live hosted database path.
+- [x] Persist conversations, messages, tabs, and required run metadata through
+  the logical-row mirror.
+- [x] Add ownership-aware project queries and indexes.
+- [x] Add RLS policies for browser-accessible relational tables; keep the
+  service-role-only compatibility tables closed to direct browser access.
+- [x] Add one-time import tooling for an existing SQLite database at startup.
+- [x] Keep the synchronous SQLite compatibility cache in memory only during
+  the migration window.
 
 ## Phase 4 — project file storage
 
-- [ ] Implement `SupabaseProjectStorage` against the private bucket.
-- [ ] Store file metadata and content hashes in `project_files`.
-- [ ] Make writes idempotent and deletes explicit.
-- [ ] Enforce path, project ownership, file-size, and content-type limits.
-- [ ] Wire every project file route through the selected storage adapter.
-- [ ] Add migration support for existing local project files.
+- [x] Implement `SupabaseProjectStorage` against the private bucket.
+- [x] Store file metadata and content hashes in `project_files`.
+- [x] Make writes idempotent and deletes explicit.
+- [x] Enforce path, project ownership, file-size, and content-type limits.
+- [x] Wire project file APIs, uploads, Figma imports, and legacy direct-write
+  paths through the selected storage adapter.
+- [x] Seed existing local project files into the remote manifest on first open.
 
 ## Phase 5 — durable hosted Bash
 
-- [ ] Add a filesystem hydration layer for one project.
-- [ ] Add file enumeration, hashing, delta upload, and deletion detection.
-- [ ] Flush changes after successful and non-zero command exits.
-- [ ] Keep the per-project execution queue.
-- [ ] Handle persistence failure as a visible command failure with retry-safe
+- [x] Add a filesystem hydration layer for one project.
+- [x] Add file enumeration, hashing, delta upload, and deletion detection.
+- [x] Flush changes after successful and non-zero command exits.
+- [x] Keep the per-project execution queue and flush before session eviction.
+- [x] Handle persistence failure as a visible command failure with retry-safe
   state, not as a successful invisible write.
-- [ ] Restore the last known working directory where supported.
-- [ ] Keep temporary/interpreter-only state ephemeral.
+- [x] Keep temporary/interpreter-only state ephemeral.
 
 ## Phase 6 — route authorization and compatibility
 
-- [ ] Require hosted identity on hosted project routes.
-- [ ] Resolve ownership from the server-side project row, never request input.
-- [ ] Apply the same ownership gate to chat, files, exports, deployments,
+- [x] Require hosted identity on hosted project routes.
+- [x] Resolve ownership from the server-side project row, never request input.
+- [x] Apply the same ownership gate to chat, files, exports, deployments,
   previews, terminal/Bash, runs, and conversations.
-- [ ] Verify team/workspace routes retain their existing authority semantics.
-- [ ] Verify tool tokens remain project-scoped and cannot bypass ownership.
-- [ ] Return stable `401`, `403`, and `404` API errors.
+- [x] Verify team/workspace routes retain their existing authority semantics.
+- [x] Verify tool tokens remain project-scoped and cannot bypass ownership.
+- [x] Return stable `401`, `403`, and `404` API errors.
 
 ## Phase 7 — verification and deployment
 
-- [ ] Unit-test token verification, path validation, ownership, manifest
+- [x] Unit-test token verification, path validation, ownership, manifest
   revisions, and storage error mapping.
-- [ ] Integration-test create → write → restart → read.
-- [ ] Integration-test Bash create/delete → project file listing.
-- [ ] Test missing and malformed Supabase configuration.
-- [ ] Run package typechecks and tests.
-- [ ] Run daemon and web production builds.
+- [x] Integration-test create → write → restart → read (adapter-level).
+- [x] Integration-test Bash create/delete → project file listing.
+- [x] Test missing and malformed Supabase configuration.
+- [x] Run daemon typechecks and focused tests.
+- [x] Run the daemon production compile and web production server build with
+  the repository's checked-in TypeScript/Next toolchain and native modules.
+- [ ] Run the full daemon suite; the current suite setup attempts a live
+  OpenAI request and must be isolated before it can run safely in CI.
 - [ ] Build the deployment image with hosted mode configured only through
   Render secrets.
-- [ ] Commit implementation in reviewable slices and push each verified
-  slice to the feature branch.
+- [x] Commit the implementation and push the verified feature branch.
 
 ## Proposed commit sequence
 

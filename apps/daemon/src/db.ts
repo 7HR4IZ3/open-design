@@ -39,6 +39,8 @@ type ChatSessionMode = 'design' | 'chat' | 'plan';
 let dbInstance: SqliteDb | null = null;
 let dbFile: string | null = null;
 
+export type DatabaseStorageMode = 'file' | 'memory';
+
 function row(value: unknown): DbRow | null {
   return value && typeof value === 'object' ? value as DbRow : null;
 }
@@ -47,14 +49,27 @@ function rows(value: unknown[]): DbRow[] {
   return value.map((item) => row(item) ?? {});
 }
 
-export function openDatabase(projectRoot: string, { dataDir }: { dataDir?: string } = {}): SqliteDb {
+export function openDatabase(
+  projectRoot: string,
+  {
+    dataDir,
+    storage = 'file',
+  }: { dataDir?: string; storage?: DatabaseStorageMode } = {},
+): SqliteDb {
   const dir = dataDir ? path.resolve(dataDir) : path.join(projectRoot, '.od');
-  const file = path.join(dir, 'app.sqlite');
+  // Keep the synchronous better-sqlite3 repository surface for the daemon's
+  // existing callers, but make the hosted Postgres mode explicitly
+  // memory-backed. SupabasePostgresPersistence hydrates this cache and
+  // flushes its logical rows to Postgres; it must never create app.sqlite on
+  // an ephemeral Render filesystem.
+  const file = storage === 'memory'
+    ? `:memory:${dir}`
+    : path.join(dir, 'app.sqlite');
   if (dbInstance && dbFile === file) return dbInstance;
   if (dbInstance) closeDatabase();
-  fs.mkdirSync(dir, { recursive: true });
-  const db = new Database(file);
-  db.pragma('journal_mode = WAL');
+  if (storage === 'file') fs.mkdirSync(dir, { recursive: true });
+  const db = new Database(storage === 'memory' ? ':memory:' : file);
+  if (storage === 'file') db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   migrate(db);
   dbInstance = db;
@@ -338,6 +353,7 @@ function migrate(db: SqliteDb): void {
       project_id TEXT,
       skill_id TEXT,
       agent_id TEXT,
+      owner_id TEXT,
       context_json TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
@@ -399,6 +415,10 @@ function migrate(db: SqliteDb): void {
     db.exec(
       `ALTER TABLE workspace_projects ADD COLUMN metadata_refresh_pending INTEGER NOT NULL DEFAULT 0`,
     );
+  }
+  const routineCols = db.prepare(`PRAGMA table_info(routines)`).all() as DbRow[];
+  if (!routineCols.some((c: DbRow) => c.name === 'owner_id')) {
+    db.exec(`ALTER TABLE routines ADD COLUMN owner_id TEXT`);
   }
   const conversationCols = db.prepare(`PRAGMA table_info(conversations)`).all() as DbRow[];
   if (!conversationCols.some((c: DbRow) => c.name === 'session_mode')) {
@@ -533,11 +553,11 @@ function migrate(db: SqliteDb): void {
   // schedule_kind/schedule_value columns are kept populated for query
   // convenience and as a fallback when reading rows written before this
   // column existed.
-  const routineCols = db.prepare(`PRAGMA table_info(routines)`).all() as DbRow[];
-  if (routineCols.length > 0 && !routineCols.some((c: DbRow) => c.name === 'schedule_json')) {
+  const routineScheduleCols = db.prepare(`PRAGMA table_info(routines)`).all() as DbRow[];
+  if (routineScheduleCols.length > 0 && !routineScheduleCols.some((c: DbRow) => c.name === 'schedule_json')) {
     db.exec(`ALTER TABLE routines ADD COLUMN schedule_json TEXT`);
   }
-  if (routineCols.length > 0 && !routineCols.some((c: DbRow) => c.name === 'context_json')) {
+  if (routineScheduleCols.length > 0 && !routineScheduleCols.some((c: DbRow) => c.name === 'context_json')) {
     db.exec(`ALTER TABLE routines ADD COLUMN context_json TEXT`);
   }
   const agentSessionCols = db.prepare(`PRAGMA table_info(agent_sessions)`).all() as DbRow[];
@@ -4281,7 +4301,7 @@ const ROUTINE_COLS = `id, name, prompt,
   schedule_kind AS scheduleKind, schedule_value AS scheduleValue,
   schedule_json AS scheduleJson,
   project_mode AS projectMode, project_id AS projectId,
-  skill_id AS skillId, agent_id AS agentId,
+  skill_id AS skillId, agent_id AS agentId, owner_id AS ownerId,
   context_json AS contextJson,
   enabled, created_at AS createdAt, updated_at AS updatedAt`;
 
@@ -4308,9 +4328,9 @@ export function insertRoutine(db: SqliteDb, r: DbRow) {
   db.prepare(
     `INSERT INTO routines
        (id, name, prompt, schedule_kind, schedule_value, schedule_json,
-        project_mode, project_id, skill_id, agent_id, context_json, enabled,
+        project_mode, project_id, skill_id, agent_id, owner_id, context_json, enabled,
         created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     r.id,
     r.name,
@@ -4322,6 +4342,7 @@ export function insertRoutine(db: SqliteDb, r: DbRow) {
     r.projectId ?? null,
     r.skillId ?? null,
     r.agentId ?? null,
+    r.ownerId ?? null,
     r.contextJson ?? null,
     r.enabled ? 1 : 0,
     r.createdAt,
@@ -4381,6 +4402,7 @@ function normalizeRoutine(row: DbRow) {
     projectId: row.projectId ?? null,
     skillId: row.skillId ?? null,
     agentId: row.agentId ?? null,
+    ownerId: row.ownerId ?? null,
     contextJson: row.contextJson ?? null,
     enabled: Number(row.enabled) === 1,
     createdAt: Number(row.createdAt),

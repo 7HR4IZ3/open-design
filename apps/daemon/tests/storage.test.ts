@@ -308,6 +308,27 @@ describe('resolveDaemonDbConfig', () => {
     });
   });
 
+  it('resolves Supabase Postgres without exposing server credentials', () => {
+    const cfg = resolveDaemonDbConfig({
+      OD_DAEMON_DB: 'postgres',
+      SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'server-secret',
+      SUPABASE_DB_TABLE: 'od_rows',
+      SUPABASE_DB_STATE_TABLE: 'od_state',
+      SUPABASE_DB_FLUSH_INTERVAL_MS: '5000',
+    });
+    expect(cfg).toEqual({
+      kind: 'postgres',
+      supabase: {
+        url: 'https://example.supabase.co',
+        table: 'od_rows',
+        stateTable: 'od_state',
+        flushIntervalMs: 5000,
+      },
+    });
+    expect(JSON.stringify(cfg)).not.toContain('server-secret');
+  });
+
   it('parses the hosted SQLite snapshot bridge without returning secrets', () => {
     const cfg = resolveDaemonDbConfig({
       OD_DAEMON_DB: 'supabase-snapshot',

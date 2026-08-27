@@ -17,13 +17,13 @@
 //   - `S3ProjectStorage` — an S3-compatible implementation.
 //   - `SupabaseProjectStorage` — a private Supabase Storage implementation.
 //
-// The daemon's existing project routes don't yet route through this
-// adapter — that's an opt-in flag away (`OD_PROJECT_STORAGE=s3`).
-// The substrate slice keeps the call sites unchanged so a wrong
-// adapter never silently corrupts user data on roll-out.
+// The daemon routes select this adapter through `OD_PROJECT_STORAGE`. Hosted
+// Supabase mode also mirrors the authoritative files into the ephemeral local
+// view needed by preview/rendering code that still expects filesystem paths.
 
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { encodeS3PathSegment, signSigV4, type SigV4Credentials } from './aws-sigv4.js';
 
@@ -36,7 +36,25 @@ export interface ProjectFileMeta {
   mtimeMs: number;
 }
 
+export interface ProjectStorageProject {
+  id: string;
+  name: string;
+  ownerId: string;
+  skillId?: string | null;
+  designSystemId?: string | null;
+  pendingPrompt?: string | null;
+  metadata?: unknown;
+  customInstructions?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export interface ProjectStorage {
+  /**
+   * Ensures the Postgres project row exists before a manifest row references
+   * it. Local/S3 adapters do not need this hook; hosted Supabase storage does.
+   */
+  ensureProject?(project: ProjectStorageProject): Promise<void>;
   // Reads `<projectId>/<relpath>` into a Buffer. Throws ENOENT-style
   // errors when missing; the caller maps to HTTP 404.
   readFile(projectId: string, relpath: string): Promise<Buffer>;
@@ -360,6 +378,12 @@ export interface SupabaseProjectStorageOptions {
   /** Optional namespace inside the bucket; defaults to `projects`. */
   prefix?: string;
   maxListEntries?: number;
+  /** Postgres manifest table; defaults to `project_files`. */
+  manifestTable?: string;
+  /** Private Storage and manifest objects are capped at 50 MiB by default. */
+  maxFileBytes?: number;
+  /** Set false only for an intentionally Storage-only legacy bucket. */
+  manifestEnabled?: boolean;
 }
 
 /**
@@ -372,6 +396,9 @@ export interface SupabaseProjectStorageOptions {
  */
 export class SupabaseProjectStorage implements ProjectStorage {
   private readonly maxListEntries: number;
+  private readonly manifestTable: string;
+  private readonly maxFileBytes: number;
+  private readonly manifestEnabled: boolean;
 
   constructor(public readonly options: SupabaseProjectStorageOptions) {
     if (!options.client) throw new StorageError('IO', 'SupabaseProjectStorage requires a client');
@@ -380,6 +407,38 @@ export class SupabaseProjectStorage implements ProjectStorage {
     if (!Number.isSafeInteger(this.maxListEntries) || this.maxListEntries < 1) {
       throw new StorageError('IO', 'SupabaseProjectStorage maxListEntries must be positive');
     }
+    this.manifestTable = options.manifestTable?.trim() || 'project_files';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(this.manifestTable)) {
+      throw new StorageError('IO', `unsafe Supabase manifest table: ${this.manifestTable}`);
+    }
+    this.maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
+    if (!Number.isSafeInteger(this.maxFileBytes) || this.maxFileBytes < 1) {
+      throw new StorageError('IO', 'SupabaseProjectStorage maxFileBytes must be a positive integer');
+    }
+    this.manifestEnabled = options.manifestEnabled ?? true;
+  }
+
+  async ensureProject(project: ProjectStorageProject): Promise<void> {
+    validateStorageProjectId(project.id);
+    if (!project.ownerId) {
+      throw new StorageError('IO', 'Supabase project persistence requires an authenticated ownerId');
+    }
+    const now = new Date().toISOString();
+    const { error } = await (this.options.client as any)
+      .from('projects')
+      .upsert({
+        id: project.id,
+        owner_id: project.ownerId,
+        name: project.name || project.id,
+        skill_id: project.skillId ?? null,
+        design_system_id: project.designSystemId ?? null,
+        pending_prompt: project.pendingPrompt ?? null,
+        metadata: project.metadata ?? null,
+        custom_instructions: project.customInstructions ?? null,
+        created_at: isoFromEpoch(project.createdAt) ?? now,
+        updated_at: isoFromEpoch(project.updatedAt) ?? now,
+      }, { onConflict: 'id' });
+    if (error) throw new StorageError('IO', `Supabase project metadata upsert failed: ${error.message}`);
   }
 
   async readFile(projectId: string, relpath: string): Promise<Buffer> {
@@ -399,17 +458,84 @@ export class SupabaseProjectStorage implements ProjectStorage {
   async writeFile(projectId: string, relpath: string, body: Buffer): Promise<ProjectFileMeta> {
     validateStoragePath(projectId, relpath);
     const normalized = normalizeRel(relpath);
+    if (body.byteLength > this.maxFileBytes) {
+      throw new StorageError(
+        'IO',
+        `Supabase project file ${normalized} exceeds the ${this.maxFileBytes}-byte limit`,
+      );
+    }
+    const storageKey = this.keyFor(projectId, normalized);
     const { error } = await this.options.client.storage
       .from(this.options.bucket)
-      .upload(this.keyFor(projectId, normalized), body, {
+      .upload(storageKey, body, {
         upsert: true,
         contentType: contentTypeForPath(normalized),
-      });
+    });
     if (error) throw new StorageError('IO', `Supabase Storage upload failed: ${error.message}`);
+    if (this.manifestEnabled) {
+      try {
+        const revision = await this.nextManifestRevision(projectId, normalized);
+        const { error: manifestError } = await (this.options.client as any)
+          .from(this.manifestTable)
+          .upsert({
+            project_id: projectId,
+            path: normalized,
+            size: body.byteLength,
+            content_type: contentTypeForPath(normalized),
+            content_hash: createHash('sha256').update(body).digest('hex'),
+            storage_key: storageKey,
+            revision,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'project_id,path' });
+        if (manifestError) {
+          throw new StorageError('IO', `Supabase project file manifest upsert failed: ${manifestError.message}`);
+        }
+      } catch (error) {
+        let cleanupError: unknown = null;
+        try {
+          const cleanup = await this.options.client.storage.from(this.options.bucket).remove([storageKey]);
+          cleanupError = cleanup.error ?? null;
+        } catch (cleanupFailure) {
+          cleanupError = cleanupFailure;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (cleanupError) {
+          const cleanupMessage = cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+          throw new StorageError('IO', `${message}; uploaded object cleanup failed: ${cleanupMessage}`);
+        }
+        if (error instanceof StorageError) throw error;
+        throw new StorageError('IO', `Supabase project file manifest update failed: ${message}`);
+      }
+    }
     return { path: normalized, size: body.byteLength, mtimeMs: Date.now() };
   }
 
   async listFiles(projectId: string): Promise<ProjectFileMeta[]> {
+    validateStorageProjectId(projectId);
+    if (this.manifestEnabled) {
+      const { data, error } = await (this.options.client as any)
+        .from(this.manifestTable)
+        .select('path,size,updated_at')
+        .eq('project_id', projectId)
+        .order('path', { ascending: true });
+      if (error) throw new StorageError('IO', `Supabase project manifest list failed: ${error.message}`);
+      const entries = (data ?? []).filter((entry: any) => typeof entry?.path === 'string');
+      if (entries.length > this.maxListEntries) {
+        throw new StorageError('IO', `Supabase project file limit exceeded (${this.maxListEntries})`);
+      }
+      return entries.map((entry: any) => {
+        validateStoragePath(projectId, entry.path);
+        return {
+          path: normalizeRel(entry.path),
+          size: Number.isFinite(Number(entry.size)) ? Number(entry.size) : 0,
+          mtimeMs: typeof entry.updated_at === 'string' && Number.isFinite(Date.parse(entry.updated_at))
+            ? Date.parse(entry.updated_at)
+            : Date.now(),
+        };
+      });
+    }
     const root = this.folderFor(projectId);
     const output: ProjectFileMeta[] = [];
     const walk = async (folder: string): Promise<void> => {
@@ -456,17 +582,45 @@ export class SupabaseProjectStorage implements ProjectStorage {
   }
 
   async deleteFile(projectId: string, relpath: string): Promise<void> {
+    validateStoragePath(projectId, relpath);
+    const normalized = normalizeRel(relpath);
     const { error } = await this.options.client.storage
       .from(this.options.bucket)
-      .remove([this.keyFor(projectId, relpath)]);
+      .remove([this.keyFor(projectId, normalized)]);
     if (error && !isSupabaseNotFound(error)) {
       throw new StorageError('IO', `Supabase Storage delete failed: ${error.message}`);
+    }
+    if (this.manifestEnabled) {
+      const { error: manifestError } = await (this.options.client as any)
+        .from(this.manifestTable)
+        .delete()
+        .eq('project_id', projectId)
+        .eq('path', normalized);
+      if (manifestError) throw new StorageError('IO', `Supabase project manifest delete failed: ${manifestError.message}`);
     }
   }
 
   async statFile(projectId: string, relpath: string): Promise<ProjectFileMeta | null> {
     validateStoragePath(projectId, relpath);
     const normalized = normalizeRel(relpath);
+    if (this.manifestEnabled) {
+      const { data, error } = await (this.options.client as any)
+        .from(this.manifestTable)
+        .select('path,size,updated_at')
+        .eq('project_id', projectId)
+        .eq('path', normalized)
+        .limit(1);
+      if (error) throw new StorageError('IO', `Supabase project manifest stat failed: ${error.message}`);
+      const entry = data?.[0];
+      if (!entry) return null;
+      return {
+        path: normalized,
+        size: Number.isFinite(Number(entry.size)) ? Number(entry.size) : 0,
+        mtimeMs: typeof entry.updated_at === 'string' && Number.isFinite(Date.parse(entry.updated_at))
+          ? Date.parse(entry.updated_at)
+          : Date.now(),
+      };
+    }
     const slash = normalized.lastIndexOf('/');
     const parent = slash < 0
       ? this.folderFor(projectId)
@@ -498,6 +652,21 @@ export class SupabaseProjectStorage implements ProjectStorage {
     const prefix = (this.options.prefix?.trim() || 'projects').replace(/^\/+|\/+$/g, '');
     return `${prefix}/${projectId}/files`;
   }
+
+  private async nextManifestRevision(projectId: string, relpath: string): Promise<number> {
+    const { data, error } = await (this.options.client as any)
+      .from(this.manifestTable)
+      .select('revision')
+      .eq('project_id', projectId)
+      .eq('path', relpath)
+      .limit(1);
+    if (error) throw new StorageError('IO', `Supabase project manifest read failed: ${error.message}`);
+    const previous = Number(data?.[0]?.revision ?? 0);
+    if (!Number.isSafeInteger(previous) || previous < 0) {
+      throw new StorageError('IO', `Supabase project manifest revision is invalid for ${projectId}/${relpath}`);
+    }
+    return previous + 1;
+  }
 }
 
 /**
@@ -511,6 +680,10 @@ export class MirroredProjectStorage implements ProjectStorage {
     public readonly remote: ProjectStorage,
     public readonly local: ProjectStorage,
   ) {}
+
+  async ensureProject(project: ProjectStorageProject): Promise<void> {
+    if (this.remote.ensureProject) await this.remote.ensureProject(project);
+  }
 
   async readFile(projectId: string, relpath: string): Promise<Buffer> {
     const body = await this.remote.readFile(projectId, relpath);
@@ -675,6 +848,8 @@ export function resolveProjectStorage(opts: {
       }),
       bucket: env.SUPABASE_STORAGE_BUCKET ?? 'open-design-projects',
       ...(env.SUPABASE_STORAGE_PREFIX ? { prefix: env.SUPABASE_STORAGE_PREFIX } : {}),
+      ...(env.SUPABASE_PROJECT_FILES_TABLE ? { manifestTable: env.SUPABASE_PROJECT_FILES_TABLE } : {}),
+      ...(env.SUPABASE_MAX_FILE_BYTES ? { maxFileBytes: Number.parseInt(env.SUPABASE_MAX_FILE_BYTES, 10) } : {}),
     });
   }
   return new LocalProjectStorage(opts.projectsRoot);
@@ -685,4 +860,10 @@ function normalizeRel(relpath: string): string {
     .replace(/^[\\/]+/, '')
     .replace(/[\\]+/g, '/')
     .replace(/\/+/g, '/');
+}
+
+function isoFromEpoch(value: number | undefined): string | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  const date = new Date(value as number);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 }

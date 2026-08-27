@@ -1,20 +1,32 @@
-// Phase 5 / spec §15.6 — daemon metadata backend selection.
+// Hosted metadata backend selection.
 //
-// Spec §15.6 calls out a Postgres adapter so multi-replica daemons
-// can share state behind a load balancer. The daemon still uses local
-// SQLite for its synchronous data-access surface. Hosted single-instance
-// deployments may select the explicit `supabase-snapshot` bridge, which
-// stores consistent SQLite backups in Supabase Storage while the relational
-// Postgres adapter is migrated incrementally.
-//
-// `OD_DAEMON_DB=postgres` remains reserved for the future relational adapter.
-// The server rejects it rather than silently dropping writes onto SQLite.
+// The daemon's existing repository surface is synchronous because a large
+// part of the product talks directly to better-sqlite3. In hosted mode that
+// surface is backed by an in-memory SQLite compatibility cache whose logical
+// rows are persisted in Supabase Postgres (see supabase-postgres.ts). The
+// cache is deliberately not an app.sqlite file and is rebuilt on every boot.
 
 export type DaemonDbKind = 'sqlite' | 'postgres' | 'supabase-snapshot';
 
+export interface SupabaseDaemonDbConfig {
+  url: string;
+  table: string;
+  stateTable: string;
+  flushIntervalMs: number;
+}
+
+export interface SupabaseSnapshotDbConfig {
+  url: string;
+  bucket: string;
+  prefix: string;
+  restore: 'if-missing' | 'always';
+}
+
 export interface DaemonDbConfig {
   kind: DaemonDbKind;
-  // Resolution metadata the future Postgres adapter will read.
+  // Legacy direct-Postgres configuration is retained for compatibility with
+  // existing local configuration, but the server intentionally does not
+  // enable it until a supported connection adapter is provided.
   postgres?: {
     host:     string;
     port:     number;
@@ -25,12 +37,7 @@ export interface DaemonDbConfig {
     // layer.
     sslMode?: 'disable' | 'require' | 'verify-full';
   };
-  supabase?: {
-    url: string;
-    bucket: string;
-    prefix: string;
-    restore: 'if-missing' | 'always';
-  };
+  supabase?: SupabaseDaemonDbConfig | SupabaseSnapshotDbConfig;
 }
 
 export class DaemonDbConfigError extends Error {
@@ -44,6 +51,32 @@ export function resolveDaemonDbConfig(env?: Record<string, string | undefined>):
   const e = env ?? process.env;
   const kind = (e.OD_DAEMON_DB ?? 'sqlite').trim().toLowerCase();
   if (kind === 'postgres') {
+    const supabaseUrl = e.SUPABASE_URL?.trim() ?? '';
+    const supabaseServiceKey = (
+      e.SUPABASE_SERVICE_ROLE_KEY?.trim()
+      || e.SUPABASE_SECRET_KEY?.trim()
+      || ''
+    );
+    if (supabaseUrl || supabaseServiceKey) {
+      if (!supabaseUrl || !supabaseServiceKey) {
+        throw new DaemonDbConfigError(
+          'OD_DAEMON_DB=postgres requires both SUPABASE_URL and ' +
+          'SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY).',
+        );
+      }
+      const flushIntervalMs = Number.parseInt(e.SUPABASE_DB_FLUSH_INTERVAL_MS ?? '', 10);
+      return {
+        kind: 'postgres',
+        supabase: {
+          url: supabaseUrl,
+          table: (e.SUPABASE_DB_TABLE ?? 'daemon_table_rows').trim() || 'daemon_table_rows',
+          stateTable: (e.SUPABASE_DB_STATE_TABLE ?? 'daemon_database_state').trim() || 'daemon_database_state',
+          flushIntervalMs: Number.isFinite(flushIntervalMs) && flushIntervalMs > 0
+            ? Math.max(1_000, Math.min(flushIntervalMs, 300_000))
+            : 15_000,
+        },
+      };
+    }
     const host = e.OD_PG_HOST ?? '';
     const portStr = e.OD_PG_PORT ?? '5432';
     const database = e.OD_PG_DATABASE ?? '';
@@ -98,7 +131,7 @@ export function resolveDaemonDbConfig(env?: Record<string, string | undefined>):
   }
   if (kind !== 'sqlite' && kind !== '') {
     throw new DaemonDbConfigError(
-      `unknown OD_DAEMON_DB value '${kind}'. Accepted: 'sqlite' (default), 'supabase-snapshot', 'postgres'.`,
+      `unknown OD_DAEMON_DB value '${kind}'. Accepted: 'sqlite' (default), 'postgres'.`,
     );
   }
   return { kind: 'sqlite' };

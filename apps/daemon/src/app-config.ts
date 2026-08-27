@@ -95,6 +95,8 @@ export interface OrbitConfigPrefs {
   enabled: boolean;
   time: string;
   templateSkillId?: string | null;
+  /** Authenticated Supabase owner for scheduled Orbit projects. */
+  ownerId?: string | null;
   workspaceScope?: {
     workspaceId: string;
     workspaceMemberId: string;
@@ -329,6 +331,11 @@ function validateOrbit(raw: unknown): OrbitConfigPrefs | undefined {
   if (Object.hasOwn(obj, 'templateSkillId')) {
     orbit.templateSkillId = typeof obj.templateSkillId === 'string' && obj.templateSkillId.trim()
       ? obj.templateSkillId.trim()
+      : null;
+  }
+  if (Object.hasOwn(obj, 'ownerId')) {
+    orbit.ownerId = typeof obj.ownerId === 'string' && obj.ownerId.trim()
+      ? obj.ownerId.trim()
       : null;
   }
   if (Object.hasOwn(obj, 'workspaceScope')) {
@@ -620,6 +627,18 @@ function applyConfigValue(
         // must not silently convert an already-scoped unattended automation
         // back into an ambient/unbound one. An explicit null still clears it.
         validated.workspaceScope = existingOrbit.workspaceScope;
+      }
+      if (
+        value
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && !Object.hasOwn(value, 'ownerId')
+        && existingOrbit?.ownerId
+      ) {
+        // The web client intentionally does not need to know this internal
+        // ownership witness. Preserve it when an older client edits Orbit's
+        // schedule without sending the new field.
+        validated.ownerId = existingOrbit.ownerId;
       }
       target[key] = validated;
     } else {

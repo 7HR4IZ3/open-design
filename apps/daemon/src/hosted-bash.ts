@@ -1,4 +1,5 @@
 import { Bash, InMemoryFs, type BashExecResult } from 'just-bash';
+import { createHash } from 'node:crypto';
 import type { ProjectStorage } from './storage/project-storage.js';
 
 export const HOSTED_BASH_ROOT = '/workspace';
@@ -28,6 +29,7 @@ interface HostedBashSession {
   queue: Promise<void>;
   ready: Promise<void>;
   persistedPaths: Set<string>;
+  persistedHashes: Map<string, string>;
 }
 
 function resolveHostedCwd(cwd: string | undefined): string {
@@ -208,7 +210,16 @@ export class HostedBashManager {
     if (this.#sessions.size >= this.#maxSessions) {
       const oldest = [...this.#sessions.entries()]
         .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt)[0];
-      if (oldest) this.#sessions.delete(oldest[0]);
+      if (oldest) {
+        // Session eviction is also a persistence boundary. Without waiting
+        // for the queued command and flushing here, the 65th active project
+        // could lose its most recent in-memory writes even though every
+        // individual command appeared to succeed.
+        await oldest[1].ready;
+        await oldest[1].queue;
+        await this.#flushSession(oldest[0], oldest[1]);
+        this.#sessions.delete(oldest[0]);
+      }
     }
 
     const created = createBash();
@@ -219,6 +230,7 @@ export class HostedBashManager {
       queue: Promise.resolve(),
       ready: Promise.resolve(),
       persistedPaths: new Set(),
+      persistedHashes: new Map(),
     };
     this.#sessions.set(projectId, session);
     session.ready = this.#hydrateSession(projectId, session).catch((error) => {
@@ -237,6 +249,7 @@ export class HostedBashManager {
       const body = await this.#storage.readFile(projectId, rel);
       await session.fs.writeFile(`${HOSTED_BASH_ROOT}/${rel}`, body);
       session.persistedPaths.add(rel);
+      session.persistedHashes.set(rel, contentHash(body));
     }
   }
 
@@ -254,16 +267,25 @@ export class HostedBashManager {
       if (!stat.isFile) continue;
       const rel = normalizeWorkspaceRelativePath(absolutePath.slice(`${HOSTED_BASH_ROOT}/`.length));
       const body = Buffer.from(await session.fs.readFileBuffer(absolutePath));
-      await this.#storage.writeFile(projectId, rel, body);
+      const hash = contentHash(body);
+      if (session.persistedHashes.get(rel) !== hash) {
+        await this.#storage.writeFile(projectId, rel, body);
+        session.persistedHashes.set(rel, hash);
+      }
       currentPaths.add(rel);
     }
     for (const previousPath of session.persistedPaths) {
       if (!currentPaths.has(previousPath)) {
         await this.#storage.deleteFile(projectId, previousPath);
+        session.persistedHashes.delete(previousPath);
       }
     }
     session.persistedPaths = currentPaths;
   }
+}
+
+function contentHash(body: Uint8Array): string {
+  return createHash('sha256').update(body).digest('hex');
 }
 
 function normalizeWorkspaceRelativePath(value: string): string {

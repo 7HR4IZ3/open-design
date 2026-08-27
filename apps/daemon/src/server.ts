@@ -1144,10 +1144,9 @@ import {
 } from './storage/project-storage.js';
 import { resolveDaemonDbConfig } from './storage/daemon-db.js';
 import {
-  createSupabaseSqliteSnapshotStore,
-  restoreSqliteSnapshot,
-  SqliteSnapshotPersistence,
-} from './storage/sqlite-snapshot.js';
+  createSupabasePostgresPersistence,
+  SupabasePostgresPersistence,
+} from './storage/supabase-postgres.js';
 import {
   createHostedAuthMiddleware,
   createHostedAuthVerifier,
@@ -2908,16 +2907,24 @@ export async function startServer({
   const app = express();
   installRouteRegistrationGuard(app);
   const daemonDbConfig = resolveDaemonDbConfig(process.env);
-  if (daemonDbConfig.kind === 'postgres') {
+  if (daemonDbConfig.kind === 'postgres' && !daemonDbConfig.supabase) {
     throw new Error(
-      'OD_DAEMON_DB=postgres is reserved for the relational Postgres adapter and is not available yet. ' +
-      'Use OD_DAEMON_DB=supabase-snapshot for single-instance hosted durability, or omit it for local SQLite.',
+      'OD_DAEMON_DB=postgres requires the Supabase adapter configuration. ' +
+      'Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY; direct OD_PG_* connections are not supported.',
     );
   }
-  const databaseSnapshotStore = daemonDbConfig.kind === 'supabase-snapshot'
-    ? createSupabaseSqliteSnapshotStore(process.env)
-    : null;
+  if (daemonDbConfig.kind === 'supabase-snapshot') {
+    throw new Error(
+      'OD_DAEMON_DB=supabase-snapshot is no longer supported because hosted metadata must not be stored as an app.sqlite file. ' +
+      'Set OD_DAEMON_DB=postgres with SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+    );
+  }
   const configuredProjectStorage = (process.env.OD_PROJECT_STORAGE ?? 'local').trim().toLowerCase();
+  if ((daemonDbConfig.kind === 'postgres' || configuredProjectStorage === 'supabase') && !hostedAuthEnabled) {
+    throw new Error(
+      'Supabase persistence requires OD_HOSTED_AUTH_REQUIRED=1 so every project and agent operation is tied to an authenticated owner.',
+    );
+  }
   const hostedBashStorage = configuredProjectStorage === 'supabase'
     ? new MirroredProjectStorage(
       resolveProjectStorage({ projectsRoot: PROJECTS_DIR }),
@@ -3242,36 +3249,25 @@ export async function startServer({
     next();
   });
   const databaseFile = path.join(RUNTIME_DATA_DIR, 'app.sqlite');
-  if (databaseSnapshotStore) {
-    const restored = await restoreSqliteSnapshot({
-      targetFile: databaseFile,
-      store: databaseSnapshotStore,
-      mode: daemonDbConfig.supabase?.restore ?? 'if-missing',
-    });
-    if (restored.restored) {
-      console.log(
-        `[db-snapshot] restored hosted metadata database${restored.localBackupFile ? `; local copy preserved at ${restored.localBackupFile}` : ''}`,
-      );
-    }
-  }
-  const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
-  const dbSnapshotPersistence = databaseSnapshotStore
-    ? new SqliteSnapshotPersistence({
-      db,
-      store: databaseSnapshotStore,
-      flushIntervalMs: Number.parseInt(process.env.OD_DAEMON_DB_SNAPSHOT_INTERVAL_MS ?? '', 10),
-    })
+  const db = openDatabase(PROJECT_ROOT, {
+    dataDir: RUNTIME_DATA_DIR,
+    storage: daemonDbConfig.kind === 'postgres' ? 'memory' : 'file',
+  });
+  const dbPostgresPersistence: SupabasePostgresPersistence | null = daemonDbConfig.kind === 'postgres'
+    ? createSupabasePostgresPersistence(process.env, db, daemonDbConfig.supabase)
     : null;
-  if (dbSnapshotPersistence) {
-    // Fail startup when the initial hosted snapshot cannot be written. This
-    // avoids presenting an apparently healthy Render service that is already
-    // falling back to ephemeral SQLite.
-    await dbSnapshotPersistence.flushNow({ force: true });
-    dbSnapshotPersistence.start();
+  if (dbPostgresPersistence) {
+    const restored = await dbPostgresPersistence.restore({ legacyDatabaseFile: databaseFile });
+    console.log(`[db-postgres] metadata source: ${restored.source} (${restored.rowCount} logical row(s))`);
+    // Fail startup when the initial hosted write cannot be completed. This
+    // avoids presenting a healthy Render service that is silently falling
+    // back to an ephemeral in-memory database.
+    await dbPostgresPersistence.flushNow({ force: true });
+    dbPostgresPersistence.start();
     app.use((req, res, next) => {
       res.once('finish', () => {
         if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-          dbSnapshotPersistence.markDirty();
+          dbPostgresPersistence.markDirty();
         }
       });
       next();
@@ -3291,7 +3287,7 @@ export async function startServer({
   } catch {
     // best-effort: a fresh db with no library_tokens is fine
   }
-  dbSnapshotPersistence?.markDirty();
+  dbPostgresPersistence?.markDirty();
   const pluginInstallation = createPluginInstallationHelpers({
     db,
     installFromLocalFolder,
@@ -7865,6 +7861,8 @@ export async function startServer({
 
   registerDaemonRoutes(app, {
     db,
+    databaseBackend: dbPostgresPersistence ? 'supabase-postgres' : 'sqlite',
+    databasePersistence: dbPostgresPersistence,
     paths: {
       PROJECT_ROOT,
       RESOURCE_ROOT: DAEMON_RESOURCE_ROOT ?? PROJECT_ROOT,
@@ -7998,6 +7996,28 @@ export async function startServer({
   const isDurableProject = (metadata: any): boolean =>
     durableProjectStorage !== null
     && !(typeof metadata?.baseDir === 'string' && path.isAbsolute(path.normalize(metadata.baseDir)));
+  const ensureDurableProjectRecord = async (projectId: string, metadata?: any) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) return;
+    const project = getProject(db, projectId);
+    const ownerId = getProjectOwnerId(db, projectId);
+    // New-project routes stage files before their SQLite metadata transaction
+    // commits. They are intentionally local-only until the project row exists;
+    // the first post-insert open/run calls syncLocalProjectToDurable.
+    if (!project) return;
+    if (!ownerId) throw new Error(`hosted project ${projectId} has no authenticated owner`);
+    await durableProjectStorage.ensureProject?.({
+      id: project.id,
+      name: project.name,
+      ownerId,
+      skillId: project.skillId ?? null,
+      designSystemId: project.designSystemId ?? null,
+      pendingPrompt: project.pendingPrompt ?? null,
+      metadata: project.metadata ?? metadata ?? null,
+      customInstructions: project.customInstructions ?? null,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    });
+  };
   const hostedFileKind = (name: string): string => {
     if (/\.html?$/i.test(name)) return 'html';
     if (/\.css$/i.test(name)) return 'css';
@@ -8016,14 +8036,62 @@ export async function startServer({
       return undefined;
     }
   };
+  const syncLocalProjectToDurable = async (projectId: string, metadata?: any) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) return;
+    if (!getProject(db, projectId)) return;
+    await ensureDurableProjectRecord(projectId, metadata);
+    const localFiles = await listFiles(PROJECTS_DIR, projectId, { metadata });
+    const localPaths = new Set(
+      localFiles
+        .filter((file) => typeof file?.name === 'string')
+        .map((file) => file.name),
+    );
+    for (const remoteFile of await durableProjectStorage.listFiles(projectId)) {
+      if (!localPaths.has(remoteFile.path)) {
+        await durableProjectStorage.deleteFile(projectId, remoteFile.path);
+      }
+    }
+    for (const file of localFiles) {
+      if (!file?.name || typeof file.name !== 'string') continue;
+      const saved = await readProjectFile(PROJECTS_DIR, projectId, file.name, metadata);
+      await durableProjectStorage.writeFile(projectId, saved.name, saved.buffer);
+      if (saved.artifactManifest) {
+        await durableProjectStorage.writeFile(
+          projectId,
+          `${saved.name}.artifact.json`,
+          Buffer.from(JSON.stringify(saved.artifactManifest, null, 2)),
+        );
+      }
+    }
+  };
   const syncDurableProjectToLocal = async (projectId: string, metadata?: any) => {
     if (!durableProjectStorage || !isDurableProject(metadata)) return;
+    await ensureDurableProjectRecord(projectId, metadata);
     await ensureProject(PROJECTS_DIR, projectId, metadata);
-    const remoteFiles = await durableProjectStorage.listFiles(projectId);
+    let remoteFiles = await durableProjectStorage.listFiles(projectId);
+    // A project created before hosted storage was enabled may have a local
+    // copy but no remote manifest yet. Seed that copy exactly once; after the
+    // first remote object exists, Supabase is authoritative.
+    if (remoteFiles.length === 0) {
+      const localFiles = await listFiles(PROJECTS_DIR, projectId, { metadata });
+      if (localFiles.length > 0) {
+        await syncLocalProjectToDurable(projectId, metadata);
+        remoteFiles = await durableProjectStorage.listFiles(projectId);
+      }
+    }
+    const remotePaths = new Set(remoteFiles.map((file) => file.path));
+    const localFiles = await listFiles(PROJECTS_DIR, projectId, { metadata });
+    for (const localFile of localFiles) {
+      if (!remotePaths.has(localFile.name)) {
+        await deleteProjectFile(PROJECTS_DIR, projectId, localFile.name, metadata).catch((error: any) => {
+          if (error?.code !== 'ENOENT') throw error;
+        });
+      }
+    }
     for (const file of remoteFiles) {
-      if (file.path.endsWith('.artifact.json')) continue;
       const body = await durableProjectStorage.readFile(projectId, file.path);
       await writeProjectFile(PROJECTS_DIR, projectId, file.path, body, { overwrite: true }, metadata);
+      if (file.path.endsWith('.artifact.json')) continue;
       const manifest = await readRemoteArtifactManifest(projectId, file.path);
       if (manifest) {
         await writeProjectFile(
@@ -8041,6 +8109,7 @@ export async function startServer({
     if (!durableProjectStorage || !isDurableProject(opts?.metadata)) {
       return listFiles(root, projectId, opts);
     }
+    await ensureDurableProjectRecord(projectId, opts?.metadata);
     const files = await durableProjectStorage.listFiles(projectId);
     const since = Number(opts?.since);
     return files
@@ -8060,6 +8129,10 @@ export async function startServer({
     if (!durableProjectStorage || !isDurableProject(metadata)) {
       return readProjectFile(root, projectId, name, metadata);
     }
+    if (!getProject(db, projectId)) {
+      return readProjectFile(root, projectId, name, metadata);
+    }
+    await ensureDurableProjectRecord(projectId, metadata);
     const safeName = sanitizePath(name);
     try {
       const [body, stat] = await Promise.all([
@@ -8107,6 +8180,7 @@ export async function startServer({
     }
     await syncDurableProjectToLocal(projectId, metadata);
     const result = await writeProjectFile(root, projectId, name, body, options, metadata);
+    if (!getProject(db, projectId)) return result;
     const saved = await readProjectFile(root, projectId, result.name, metadata);
     await durableProjectStorage.writeFile(projectId, result.name, saved.buffer);
     if (saved.artifactManifest) {
@@ -8120,6 +8194,10 @@ export async function startServer({
   };
   const durableDeleteProjectFile = async (root: string, projectId: string, name: string, metadata?: any) => {
     if (!durableProjectStorage || !isDurableProject(metadata)) {
+      return deleteProjectFile(root, projectId, name, metadata);
+    }
+    await ensureDurableProjectRecord(projectId, metadata);
+    if (!getProject(db, projectId)) {
       return deleteProjectFile(root, projectId, name, metadata);
     }
     const safeName = sanitizePath(name);
@@ -8141,6 +8219,7 @@ export async function startServer({
     }
     await syncDurableProjectToLocal(projectId, metadata);
     const result = await renameProjectFile(root, projectId, fromName, toName, metadata);
+    if (!getProject(db, projectId)) return result;
     const saved = await readProjectFile(root, projectId, result.newName, metadata);
     await durableProjectStorage.deleteFile(projectId, result.oldName);
     await durableProjectStorage.deleteFile(projectId, `${result.oldName}.artifact.json`);
@@ -8156,6 +8235,7 @@ export async function startServer({
   };
   const durableEnsureProject = async (root: string, projectId: string, metadata?: any) => {
     const result = await ensureProject(root, projectId, metadata);
+    await ensureDurableProjectRecord(projectId, metadata);
     await syncDurableProjectToLocal(projectId, metadata);
     return result;
   };
@@ -8167,6 +8247,36 @@ export async function startServer({
     await syncDurableProjectToLocal(projectId, opts?.metadata);
     return searchProjectFiles(root, projectId, query, opts);
   };
+  if (durableProjectStorage) {
+    // A few legacy route handlers still write directly through projects.ts
+    // (duplicate, design-system, and library import paths). This response
+    // boundary catches those writes without making every old registrar know
+    // about Supabase. The explicit file wrappers above remain authoritative
+    // for normal file APIs and surface persistence failures synchronously.
+    app.use((req, _res, next) => {
+      const method = req.method.toUpperCase();
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+        const pathMatch = /^\/api\/projects\/([^/]+)/u.exec(req.path);
+        const bodyProjectId = req.body && typeof req.body === 'object'
+          ? (req.body.projectId ?? req.body.project?.id)
+          : undefined;
+        const projectId = pathMatch?.[1]
+          ? decodeURIComponent(pathMatch[1])
+          : typeof bodyProjectId === 'string' ? bodyProjectId : null;
+        if (projectId) {
+          const project = getProject(db, projectId);
+          if (project) {
+            _res.once('finish', () => {
+              void syncLocalProjectToDurable(projectId, project.metadata).catch((error) => {
+                console.error(`[db-postgres] response project sync failed for ${projectId}`, error);
+              });
+            });
+          }
+        }
+      }
+      next();
+    });
+  }
   const projectFileDeps = {
     ensureProject: durableEnsureProject,
     listFiles: durableListFiles,
@@ -8382,6 +8492,11 @@ export async function startServer({
     auth: { authorizeToolRequest },
     http: httpDeps,
     bash: hostedBash,
+    ensureProject: async (projectId) => {
+      const project = getProject(db, projectId);
+      if (!project) throw new Error('project not found');
+      return durableEnsureProject(PROJECTS_DIR, projectId, project.metadata);
+    },
     authorizeProjectRequest,
     authorizeProjectToolRequest,
   });
@@ -8436,6 +8551,7 @@ export async function startServer({
           label: decodeMultipartFilename(req.file.originalname || 'figma-import.fig'),
           notes,
         });
+        await syncLocalProjectToDurable(project.id, project.metadata);
         return res.json(result);
       } catch (caught) {
         return sendApiError(
@@ -10804,7 +10920,7 @@ export async function startServer({
         // folders with no managed copy in sandbox mode), so we pass chatMeta
         // through instead of branching on baseDir here.
         assertSandboxProjectRootAvailable(chatMeta);
-        cwd = await ensureProject(PROJECTS_DIR, projectId, chatMeta);
+        cwd = await durableEnsureProject(PROJECTS_DIR, projectId, chatMeta);
       } catch (err) {
         if (err instanceof SandboxImportedProjectError) {
           return failRun('BAD_REQUEST', err.message);
@@ -10813,7 +10929,7 @@ export async function startServer({
       }
       if (cwd) {
         try {
-          existingProjectFiles = await listFiles(PROJECTS_DIR, projectId, { metadata: chatMeta });
+          existingProjectFiles = await durableListFiles(PROJECTS_DIR, projectId, { metadata: chatMeta });
         } catch {
           // Inventory is advisory prompt context. A concurrent project-tree
           // mutation must not erase the authoritative cwd/session identity.
@@ -15471,33 +15587,48 @@ export async function startServer({
       // create_artifact, or the run terminated between HTML write and
       // sidecar write). Only files modified after the run started are
       // touched — pre-existing HTML in imported-folder projects must not
-      // receive spurious manifests. Best-effort; must not block finalisation.
+      // receive spurious manifests. Hosted projects must complete the cloud
+      // sync before the terminal event is published, otherwise a successful
+      // run can leave its files only on Render's ephemeral disk.
       // See issue #2893.
       if (run.projectId) {
-        (async () => {
-          try {
-            const project = getProject(db, run.projectId);
-            const files = await listFiles(PROJECTS_DIR, run.projectId, {
-              metadata: project?.metadata,
-            });
-            const dir = resolveProjectDir(PROJECTS_DIR, run.projectId, project?.metadata);
-            for (const f of files) {
-              const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
-              if (ext !== '.html' && ext !== '.htm') continue;
-              try {
-                const filePath = path.join(dir, f.name);
-                const st = await fs.promises.stat(filePath);
-                if (!isRunTouchedProjectFile(st.mtimeMs, runStartTimeMs)) continue;
-                await reconcileHtmlArtifactManifest(
-                  PROJECTS_DIR,
-                  run.projectId,
-                  f.name,
-                  project?.metadata,
-                );
-              } catch { /* per-file best-effort */ }
-            }
-          } catch { /* project-level best-effort */ }
-        })();
+        const project = getProject(db, run.projectId);
+        const projectMetadata = project?.metadata;
+        const hostedProject = isDurableProject(projectMetadata);
+        try {
+          await syncLocalProjectToDurable(run.projectId, projectMetadata);
+          const files = await listFiles(PROJECTS_DIR, run.projectId, {
+            metadata: projectMetadata,
+          });
+          const dir = resolveProjectDir(PROJECTS_DIR, run.projectId, projectMetadata);
+          for (const f of files) {
+            const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
+            if (ext !== '.html' && ext !== '.htm') continue;
+            try {
+              const filePath = path.join(dir, f.name);
+              const st = await fs.promises.stat(filePath);
+              if (!isRunTouchedProjectFile(st.mtimeMs, runStartTimeMs)) continue;
+              await reconcileHtmlArtifactManifest(
+                PROJECTS_DIR,
+                run.projectId,
+                f.name,
+                projectMetadata,
+              );
+            } catch { /* per-file best-effort */ }
+          }
+          await syncLocalProjectToDurable(run.projectId, projectMetadata);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.error(`[db-postgres] project ${run.projectId} sync failed`, detail);
+          if (hostedProject && !design.runs.isTerminal(run.status)) {
+            send('error', createSseErrorPayload(
+              'AGENT_EXECUTION_FAILED',
+              `The run completed, but its project files could not be saved to Supabase: ${detail}`,
+              { retryable: true },
+            ));
+            return finishWithRetryDecision('failed', 1, null);
+          }
+        }
       }
       // Flush buffered plain-text stdout (antigravity) that was not
       // suppressed by the auth-prompt guard above. Send each chunk in
@@ -16037,6 +16168,7 @@ export async function startServer({
     systemPrompt,
     template,
     workspaceScope,
+    ownerId,
   }) => {
     // Each Orbit run gets its own project so the conversation, messages, and
     // live artifact are isolated. The handler does the synchronous prep here
@@ -16073,6 +16205,7 @@ export async function startServer({
       name: projectName,
       skillId: 'live-artifact',
       designSystemId: orbitDesignSystemId,
+      ownerId: ownerId ?? null,
       pendingPrompt: null,
       metadata: { kind: 'orbit', trigger },
       createdAt: now,
@@ -16332,6 +16465,7 @@ export async function startServer({
       insertProject(db, {
         id: projectId,
         name: projectName,
+        ownerId: routine.ownerId ?? null,
         skillId: routineSkillId,
         // A background routine has no live request authority from which to
         // prove an ambient app default. Persist no brand for a new project;
@@ -16803,11 +16937,11 @@ export async function startServer({
       await terminalService.shutdownActive();
       await browserSessionService.shutdownActive();
       await design.analytics.shutdown();
-      if (dbSnapshotPersistence) {
+      if (dbPostgresPersistence) {
         try {
-          await dbSnapshotPersistence.shutdown();
+          await dbPostgresPersistence.shutdown();
         } catch (error) {
-          console.error('[db-snapshot] final flush failed', error);
+          console.error('[db-postgres] final flush failed', error);
         }
       }
     };

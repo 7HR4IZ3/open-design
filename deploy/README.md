@@ -112,27 +112,31 @@ CODEX_AUTH_FILE=/etc/secrets/codex-auth.json
 OPENCODE_AUTH_FILE=/etc/secrets/opencode-auth.json
 ```
 
-To make the free Render service user-scoped and restart-safe, run
-`supabase/migrations/0001_hosted_persistence_foundation.sql` once, then add
-these Render environment variables. Keep the service-role key server-only:
+To make the free Render service user-scoped and restart-safe, run the
+Supabase migrations `0001_hosted_persistence_foundation.sql` and
+`0002_daemon_postgres_metadata.sql` once, then add these Render environment
+variables. Keep the service-role key server-only:
 
 ```text
 OD_HOSTED_AUTH_REQUIRED=1
 OD_PROJECT_STORAGE=supabase
-OD_DAEMON_DB=supabase-snapshot
+OD_DAEMON_DB=postgres
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<server-only-secret>
 SUPABASE_STORAGE_BUCKET=open-design-projects
-SUPABASE_DATABASE_BUCKET=open-design-database
+SUPABASE_DB_TABLE=daemon_table_rows
+SUPABASE_DB_STATE_TABLE=daemon_database_state
+SUPABASE_DB_FLUSH_INTERVAL_MS=15000
 NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED=1
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable-key>
 ```
 
-The snapshot database bridge keeps the existing synchronous SQLite metadata API
-but stores a consistent backup in Supabase Storage, so it is suitable for one
-active Render instance. It is not the final multi-replica Postgres adapter;
-that relational migration remains tracked in the Supabase persistence plan.
+Hosted mode keeps the existing synchronous metadata API over an in-memory
+SQLite compatibility cache. Its logical rows are mirrored to Supabase Postgres
+on mutations, periodically, and during shutdown; an existing local
+`app.sqlite` is imported once and then removed. This is intended for one active
+daemon writer. No SQLite database file or database snapshot bucket is used.
 
 The free Render tier has ephemeral storage, so credentials or agent session
 files written inside the service can disappear after a restart, deploy, or

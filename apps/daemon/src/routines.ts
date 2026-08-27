@@ -53,6 +53,8 @@ export interface Routine {
   target: RoutineProjectTarget;
   skillId: string | null;
   agentId: string | null;
+  /** Supabase owner for hosted automation-created projects. */
+  ownerId?: string | null;
   context: RoutineContextSelection;
   enabled: boolean;
   nextRunAt: number | null;

@@ -1,10 +1,9 @@
 -- OpenDesign hosted persistence foundation.
 --
--- The daemon currently uses SQLite for its complete local metadata graph. This
--- migration establishes the hosted ownership/file/workspace tables that the
--- Supabase adapter will use while the remaining conversation/run tables are
--- ported. Keep the bucket private: the daemon's service-role client is the
--- only storage client in the hosted deployment.
+-- The daemon's hosted metadata graph is created by migration 0002. Keep the
+-- ownership/file/workspace foundation here because Storage manifests need a
+-- project row before their first object is uploaded. The daemon's service-role
+-- client is the only server-side client that writes these tables.
 
 create table if not exists public.profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -99,14 +98,6 @@ create policy "bash_workspaces_owner_all"
 
 insert into storage.buckets (id, name, public)
 values ('open-design-projects', 'open-design-projects', false)
-on conflict (id) do update set public = false;
-
--- Transitional hosted metadata bridge. The daemon stores a consistent
--- better-sqlite3 backup here while the synchronous SQLite data-access surface
--- is migrated to relational Postgres. Keep this bucket private; only the
--- daemon's service-role client may read or write the snapshot.
-insert into storage.buckets (id, name, public)
-values ('open-design-database', 'open-design-database', false)
 on conflict (id) do update set public = false;
 
 create or replace function public.handle_new_open_design_user()

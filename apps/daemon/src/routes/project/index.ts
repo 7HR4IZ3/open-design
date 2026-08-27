@@ -142,6 +142,7 @@ import {
 import { localPluginRegistryScope } from '../../plugins/local-source.js';
 import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-context.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+import { hostedAuthPrincipalFromRequest } from '../../hosted-auth.js';
 
 export function rewriteOutsideExecutableHtmlRanges(
   html: string,
@@ -1899,6 +1900,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   const { randomId } = ctx.ids;
   const { validateProjectDesignSystemId, validateProjectSkillId } = ctx.validation;
   const { collabSync, teamProjectCatalog, workspaceTypes } = ctx;
+  const hostedOwnerIdForRequest = (req: Request): string | null =>
+    hostedAuthPrincipalFromRequest(req)?.userId ?? null;
   const learnAssertedWorkspaceType = (context: WorkspaceResourceContext | null) => {
     if (!context?.workspaceTypeAsserted) return;
     workspaceTypes?.learn({
@@ -2970,6 +2973,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             const project = insertProject(db, {
               id: manifest.id,
               name: manifest.name,
+              ownerId: hostedOwnerIdForRequest(req),
               skillId: manifest.skillId ?? null,
               designSystemId: manifest.designSystemId ?? null,
               pendingPrompt: null,
@@ -3025,7 +3029,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     }
   });
 
-  app.get('/api/projects', async (_req, res) => {
+  app.get('/api/projects', async (req, res) => {
     try {
       const locations = await configuredProjectLocations();
       const latestRunStatuses = listLatestProjectRunStatuses(db);
@@ -3060,7 +3064,10 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // ever resolve to misses).
       /** @type {import('@open-design/contracts').ProjectsResponse} */
       const body = {
-        projects: listUnboundProjects(db)
+        projects: listUnboundProjects(
+          db,
+          hostedOwnerIdForRequest(req),
+        )
           .filter((project: any) => projectVisibleForLocations(project, locations))
           .map((project: any) => ({
             ...project,
@@ -3970,6 +3977,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           let createdProject = insertProject(db, {
             id,
             name: name.trim(),
+            ownerId: hostedOwnerIdForRequest(req),
             skillId: normalizedSkillId,
             designSystemId: normalizedDesignSystemId,
             pendingPrompt: pendingPrompt || null,
@@ -4386,6 +4394,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         const project = insertProject(db, {
           id: targetProjectId,
           name: targetName,
+          ownerId: hostedOwnerIdForRequest(req),
           skillId: sourceProject.skillId ?? null,
           designSystemId: sourceProject.designSystemId ?? null,
           pendingPrompt: null,
@@ -4546,6 +4555,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         const project = insertProject(db, {
           id: targetProjectId,
           name: targetName,
+          ownerId: hostedOwnerIdForRequest(req),
           skillId: null,
           designSystemId: designSystem.id,
           pendingPrompt,

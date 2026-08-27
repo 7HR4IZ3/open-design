@@ -155,6 +155,8 @@ export interface StartBrandExtractionOptions {
     agentId?: string | null;
     agentName?: string | null;
   };
+  /** Supabase Auth owner id for hosted project isolation. */
+  ownerId?: string | null;
 }
 
 export interface StartBrandExtractionResult {
@@ -379,6 +381,7 @@ export async function startBrandExtraction(
     insertProject(db, {
       id: projectId,
       name,
+      ownerId: opts.ownerId ?? null,
       skillId: null,
       designSystemId: draftDesignSystemId,
       pendingPrompt,

@@ -2,6 +2,26 @@
 
 This is the execution checklist for the companion specification.
 
+## Current implementation checkpoint
+
+The current branch now contains the first hosted slice:
+
+- opt-in Supabase Auth with email/password sign-in, sign-up, session restore,
+  sign-out, bearer transport, and daemon token verification;
+- server-side project ownership attribution and ownership gates;
+- a private Supabase Storage adapter with path validation, recursive listing,
+  mirroring for preview code, and explicit delete/write behavior;
+- project-scoped `just-bash` hydration and flush across daemon restarts when
+  `OD_PROJECT_STORAGE=supabase` is enabled;
+- the hosted persistence foundation migration in
+  `supabase/migrations/0001_hosted_persistence_foundation.sql`.
+
+The daemon's complete metadata graph still runs on SQLite in this checkpoint.
+The Postgres tables below are the migration foundation, not a claim that
+conversations, messages, runs, tabs, deployments, and collaboration metadata
+have already moved. Hosted deployment should therefore treat this as the file
+storage/auth slice until the Postgres adapter and import path are completed.
+
 ## Phase 0 — committed design baseline
 
 - [x] Document current SQLite, local project-file, and `InMemoryFs` owners.
@@ -11,27 +31,27 @@ This is the execution checklist for the companion specification.
 
 ## Phase 1 — configuration and clients
 
-- [ ] Add a daemon-only Supabase server client module.
-- [ ] Add a browser Supabase client module with safe public variables.
-- [ ] Add strict configuration parsing and actionable startup diagnostics.
-- [ ] Add dependency versions compatible with the repository's Node and pnpm
+- [x] Add daemon-only Supabase server clients for Auth and Storage.
+- [x] Add a browser Supabase client module with safe public variables.
+- [x] Add strict configuration parsing and actionable startup diagnostics.
+- [x] Add dependency versions compatible with the repository's Node and pnpm
   baseline.
-- [ ] Keep local mode working when hosted variables are absent.
+- [x] Keep local mode working when hosted variables are absent.
 
 ## Phase 2 — authentication
 
-- [ ] Add email/password sign-up, sign-in, sign-out, and session restoration.
-- [ ] Add an auth gate/loading state to the web shell.
-- [ ] Add a client API wrapper that sends the current access token.
-- [ ] Add daemon middleware for Bearer-token verification.
-- [ ] Expose a minimal authenticated-user/health endpoint without leaking
+- [x] Add email/password sign-up, sign-in, sign-out, and session restoration.
+- [x] Add an auth gate/loading state to the web shell.
+- [x] Add a client API wrapper that sends the current access token.
+- [x] Add daemon middleware for Bearer-token verification.
+- [x] Expose a minimal authenticated-user/health endpoint without leaking
   secrets.
-- [ ] Preserve local desktop and explicitly scoped tool-token paths.
+- [x] Preserve local desktop and explicitly scoped tool-token paths.
 
 ## Phase 3 — Postgres persistence
 
-- [ ] Create versioned Supabase SQL migrations.
-- [ ] Port project metadata and ownership first.
+- [x] Create the hosted persistence foundation migration.
+- [ ] Port project metadata and ownership into the live daemon database path.
 - [ ] Port conversations, messages, tabs, and required run metadata.
 - [ ] Add ownership-aware queries and indexes.
 - [ ] Add RLS policies for direct Supabase access where applicable.

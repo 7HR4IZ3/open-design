@@ -47,6 +47,7 @@ import {
 import { reconcileLibrary, type ReconcileLibraryResult } from '../library-sync.js';
 import { fetchExternalBrandAsset } from '../brands/safe-fetch.js';
 import { ensureProjectSubdir } from '../projects.js';
+import { hostedAuthPrincipalFromRequest } from '../hosted-auth.js';
 import {
   authorizeCreatedProjectWorkspace,
   bindCreatedProjectToWorkspace,
@@ -656,6 +657,7 @@ export function registerLibraryRoutes(app: Express, ctx: RegisterLibraryRoutesDe
       insertProject(db, {
         id: projectId,
         name: baseName || 'Captured page',
+        ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
         skillId: null,
         designSystemId: null,
         pendingPrompt: null,

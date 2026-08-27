@@ -31,6 +31,7 @@ import type { PluginShareAction } from '../../services/plugin-share-tasks.js';
 import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
 import { workspaceTeamPluginBindingResourceId } from '../../plugins/registry.js';
 import { localPluginRegistryScope } from '../../plugins/local-source.js';
+import { hostedAuthPrincipalFromRequest } from '../../hosted-auth.js';
 import {
   classifyPluginInstallError,
   type PluginInstallErrorCode,
@@ -759,6 +760,7 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
         const createdProject = projectStore.insertProject(db, {
           id: projectId,
           name: projectName,
+          ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
           skillId: null,
           designSystemId: null,
           pendingPrompt: null,

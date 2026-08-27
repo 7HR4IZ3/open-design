@@ -74,6 +74,7 @@ function migrate(db: SqliteDb): void {
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      owner_id TEXT,
       skill_id TEXT,
       design_system_id TEXT,
       pending_prompt TEXT,
@@ -379,6 +380,10 @@ function migrate(db: SqliteDb): void {
   if (!cols.some((c: DbRow) => c.name === 'custom_instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN custom_instructions TEXT`);
   }
+  if (!cols.some((c: DbRow) => c.name === 'owner_id')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN owner_id TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_owner_updated ON projects(owner_id, updated_at DESC)`);
   const workspaceProjectCols = db.prepare(`PRAGMA table_info(workspace_projects)`).all() as DbRow[];
   if (!workspaceProjectCols.some((c: DbRow) => c.name === 'resource_hub_resource_id')) {
     db.exec(`ALTER TABLE workspace_projects ADD COLUMN resource_hub_resource_id TEXT`);
@@ -1034,7 +1039,10 @@ export function listProjects(db: SqliteDb) {
  * needs the join. A project bound to ANY workspace — personal or team — is
  * someone's claimed resource and must not leak into a headerless read.
  */
-export function listUnboundProjects(db: SqliteDb) {
+export function listUnboundProjects(db: SqliteDb, ownerId?: string | null) {
+  const ownerFilter = typeof ownerId === 'string' && ownerId.trim().length > 0
+    ? 'AND p.owner_id = ?'
+    : '';
   const rows = db
     .prepare(
       `SELECT p.id, p.name, p.skill_id AS skillId,
@@ -1048,9 +1056,10 @@ export function listUnboundProjects(db: SqliteDb) {
          FROM projects p
          LEFT JOIN workspace_projects wp ON wp.project_id = p.id
         WHERE wp.project_id IS NULL
+          ${ownerFilter}
         ORDER BY p.updated_at DESC`,
     )
-    .all() as DbRow[];
+    .all(...(ownerFilter ? [ownerId] : [])) as DbRow[];
   return rows.map(normalizeProject);
 }
 
@@ -1873,15 +1882,26 @@ export function getProject(db: SqliteDb, id: string) {
   return row ? normalizeProject(row) : null;
 }
 
+/** The Supabase Auth user that owns a project in hosted mode, if attributed. */
+export function getProjectOwnerId(db: SqliteDb, id: string): string | null {
+  const row = db
+    .prepare(`SELECT owner_id AS ownerId FROM projects WHERE id = ?`)
+    .get(id) as DbRow | undefined;
+  return typeof row?.ownerId === 'string' && row.ownerId.trim().length > 0
+    ? row.ownerId.trim()
+    : null;
+}
+
 export function insertProject(db: SqliteDb, p: DbRow) {
   db.prepare(
     `INSERT INTO projects
-       (id, name, skill_id, design_system_id, pending_prompt,
+       (id, name, owner_id, skill_id, design_system_id, pending_prompt,
         metadata_json, custom_instructions, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     p.id,
     p.name,
+    p.ownerId ?? null,
     p.skillId ?? null,
     p.designSystemId ?? null,
     p.pendingPrompt ?? null,

@@ -15,6 +15,7 @@ import type {
 } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { toastSlideUp } from '../motion';
+import { createHostedEventSource } from '../auth/supabase-browser';
 
 interface ActiveToast {
   key: number;
@@ -108,8 +109,15 @@ export function MemoryToast({
     // Guard for environments without EventSource (jsdom in tests, SSR).
     // The toast is purely a UX nicety; no SSE just means no auto-pop-up.
     if (typeof EventSource === 'undefined') return;
-    const es = new EventSource('/api/memory/events');
-    es.addEventListener('change', (raw) => {
+    let es: EventSource | null = null;
+    let active = true;
+    const attach = (next: EventSource) => {
+      if (!active) {
+        next.close();
+        return;
+      }
+      es = next;
+      es.addEventListener('change', (raw) => {
       try {
         const event = JSON.parse((raw as MessageEvent).data) as MemoryChangeEvent;
         if (event.kind !== 'extract') return;
@@ -127,14 +135,14 @@ export function MemoryToast({
       } catch {
         // Malformed payload — ignore.
       }
-    });
-    es.addEventListener('error', () => {
+      });
+      es.addEventListener('error', () => {
       // The browser will auto-reconnect. We don't surface connection
       // failures because the SSE channel is purely a UX nicety; missing
       // a notification still lets the user see updates next time they
       // open Settings → Memory.
-    });
-    es.addEventListener('extraction', (raw) => {
+      });
+      es.addEventListener('extraction', (raw) => {
       try {
         const event = JSON.parse((raw as MessageEvent).data) as MemoryExtractionEvent;
         if (!event?.id) return;
@@ -159,9 +167,20 @@ export function MemoryToast({
       } catch {
         // Malformed payload — ignore.
       }
-    });
+      });
+    };
+    const created = createHostedEventSource('/api/memory/events');
+    if (created instanceof EventSource) {
+      attach(created);
+    } else {
+      void created.then(attach).catch(() => {
+      // A missing session or unavailable auth service leaves this optional UX
+      // stream disabled; the settings panel remains usable.
+      });
+    }
     return () => {
-      es.close();
+      active = false;
+      es?.close();
     };
   }, [subscribed]);
 

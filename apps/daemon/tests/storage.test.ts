@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   LocalProjectStorage,
+  SupabaseProjectStorage,
   S3ProjectStorage,
   StorageError,
   resolveProjectStorage,
@@ -264,6 +265,22 @@ describe('resolveProjectStorage', () => {
       region: 'us-east-2',
     });
     expect((storage as S3ProjectStorage).options.credentials.accessKeyId).toBe('AKIA-AWS');
+  });
+
+  it('resolves Supabase Storage with the daemon service key', () => {
+    const storage = resolveProjectStorage({
+      projectsRoot: tmp,
+      env: {
+        OD_PROJECT_STORAGE: 'supabase',
+        SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret',
+        SUPABASE_STORAGE_BUCKET: 'od-projects',
+      },
+    });
+    expect(storage).toBeInstanceOf(SupabaseProjectStorage);
+    expect((storage as SupabaseProjectStorage).options.bucket).toBe('od-projects');
+    expect((storage as SupabaseProjectStorage).keyFor('p1', 'src/index.html'))
+      .toBe('projects/p1/files/src/index.html');
   });
 });
 

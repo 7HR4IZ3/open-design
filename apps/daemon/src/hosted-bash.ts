@@ -1,4 +1,5 @@
 import { Bash, InMemoryFs, type BashExecResult } from 'just-bash';
+import type { ProjectStorage } from './storage/project-storage.js';
 
 export const HOSTED_BASH_ROOT = '/workspace';
 export const HOSTED_BASH_DEFAULT_TIMEOUT_MS = 30_000;
@@ -22,8 +23,11 @@ export interface HostedBashResult {
 
 interface HostedBashSession {
   bash: Bash;
+  fs: InMemoryFs;
   lastUsedAt: number;
   queue: Promise<void>;
+  ready: Promise<void>;
+  persistedPaths: Set<string>;
 }
 
 function resolveHostedCwd(cwd: string | undefined): string {
@@ -57,10 +61,10 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
   return value;
 }
 
-function createBash(): Bash {
+function createBash(): { bash: Bash; fs: InMemoryFs } {
   const fs = new InMemoryFs({}, { maxTotalBytes: HOSTED_BASH_MAX_FILESYSTEM_BYTES });
   fs.mkdirSync(HOSTED_BASH_ROOT, { recursive: true });
-  return new Bash({
+  const bash = new Bash({
     fs,
     cwd: HOSTED_BASH_ROOT,
     env: {
@@ -80,6 +84,7 @@ function createBash(): Bash {
     // this first in-memory implementation. R2 can be added behind the same
     // filesystem interface later without exposing the host process.
   });
+  return { bash, fs };
 }
 
 function publicResult(result: BashExecResult, cwd: string, timedOut: boolean): HostedBashResult {
@@ -97,15 +102,23 @@ function publicResult(result: BashExecResult, cwd: string, timedOut: boolean): H
  *
  * A session is intentionally shared across calls for one project so a tool
  * call such as `printf ... > file` can be followed by `cat file`. The queue
- * prevents concurrent agent turns from interleaving writes. All state is
- * lost when the daemon restarts; a remote filesystem can replace this store
- * later without changing the tool contract.
+ * prevents concurrent agent turns from interleaving writes. In local mode
+ * state is lost when the daemon restarts; when a ProjectStorage adapter is
+ * configured, the workspace is hydrated and flushed through that adapter.
  */
+export interface HostedBashManagerOptions {
+  maxSessions?: number;
+  storage?: ProjectStorage | null;
+}
+
 export class HostedBashManager {
   readonly #sessions = new Map<string, HostedBashSession>();
   readonly #maxSessions: number;
+  readonly #storage: ProjectStorage | null;
 
-  constructor(maxSessions = HOSTED_BASH_MAX_SESSIONS) {
+  constructor(options: number | HostedBashManagerOptions = HOSTED_BASH_MAX_SESSIONS) {
+    const maxSessions = typeof options === 'number' ? options : options.maxSessions ?? HOSTED_BASH_MAX_SESSIONS;
+    this.#storage = typeof options === 'number' ? null : options.storage ?? null;
     if (!Number.isSafeInteger(maxSessions) || maxSessions < 1) {
       throw new Error('maxSessions must be a positive integer');
     }
@@ -121,7 +134,7 @@ export class HostedBashManager {
     if (!script.trim()) throw new Error('command is required');
     const cwd = resolveHostedCwd(options.cwd);
     const timeoutMs = normalizeTimeout(options.timeoutMs);
-    const session = this.#getSession(projectId);
+    const session = await this.#getSession(projectId);
     session.lastUsedAt = Date.now();
 
     const run = session.queue.then(async () => {
@@ -139,8 +152,17 @@ export class HostedBashManager {
           ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
           signal: controller.signal,
         });
+        await this.#flushSession(projectId, session);
         return publicResult(result, cwd, timedOut);
       } catch (error) {
+        // just-bash normally returns a non-zero result, but syntax/runtime
+        // failures can still reject. Flush the virtual FS in that path too so
+        // a write performed before the failure is not silently lost.
+        try {
+          await this.#flushSession(projectId, session);
+        } catch (persistenceError) {
+          throw persistenceError;
+        }
         if (timedOut) {
           return {
             stdout: '',
@@ -171,9 +193,17 @@ export class HostedBashManager {
     return this.#sessions.size;
   }
 
-  #getSession(projectId: string): HostedBashSession {
+  /** Identifies whether the workspace survives daemon restarts. */
+  get persistence(): 'supabase-storage' | 'daemon-memory-only' {
+    return this.#storage ? 'supabase-storage' : 'daemon-memory-only';
+  }
+
+  async #getSession(projectId: string): Promise<HostedBashSession> {
     const existing = this.#sessions.get(projectId);
-    if (existing) return existing;
+    if (existing) {
+      await existing.ready;
+      return existing;
+    }
 
     if (this.#sessions.size >= this.#maxSessions) {
       const oldest = [...this.#sessions.entries()]
@@ -181,12 +211,65 @@ export class HostedBashManager {
       if (oldest) this.#sessions.delete(oldest[0]);
     }
 
+    const created = createBash();
     const session: HostedBashSession = {
-      bash: createBash(),
+      bash: created.bash,
+      fs: created.fs,
       lastUsedAt: Date.now(),
       queue: Promise.resolve(),
+      ready: Promise.resolve(),
+      persistedPaths: new Set(),
     };
     this.#sessions.set(projectId, session);
+    session.ready = this.#hydrateSession(projectId, session).catch((error) => {
+      if (this.#sessions.get(projectId) === session) this.#sessions.delete(projectId);
+      throw error;
+    });
+    await session.ready;
     return session;
   }
+
+  async #hydrateSession(projectId: string, session: HostedBashSession): Promise<void> {
+    if (!this.#storage) return;
+    const files = await this.#storage.listFiles(projectId);
+    for (const file of files) {
+      const rel = normalizeWorkspaceRelativePath(file.path);
+      const body = await this.#storage.readFile(projectId, rel);
+      await session.fs.writeFile(`${HOSTED_BASH_ROOT}/${rel}`, body);
+      session.persistedPaths.add(rel);
+    }
+  }
+
+  async #flushSession(projectId: string, session: HostedBashSession): Promise<void> {
+    if (!this.#storage) return;
+    const currentPaths = new Set<string>();
+    for (const absolutePath of session.fs.getAllPaths()) {
+      if (absolutePath === HOSTED_BASH_ROOT || !absolutePath.startsWith(`${HOSTED_BASH_ROOT}/`)) continue;
+      let stat;
+      try {
+        stat = await session.fs.stat(absolutePath);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile) continue;
+      const rel = normalizeWorkspaceRelativePath(absolutePath.slice(`${HOSTED_BASH_ROOT}/`.length));
+      const body = Buffer.from(await session.fs.readFileBuffer(absolutePath));
+      await this.#storage.writeFile(projectId, rel, body);
+      currentPaths.add(rel);
+    }
+    for (const previousPath of session.persistedPaths) {
+      if (!currentPaths.has(previousPath)) {
+        await this.#storage.deleteFile(projectId, previousPath);
+      }
+    }
+    session.persistedPaths = currentPaths;
+  }
+}
+
+function normalizeWorkspaceRelativePath(value: string): string {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized || normalized.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+    throw new Error(`invalid hosted workspace path: ${value}`);
+  }
+  return normalized;
 }

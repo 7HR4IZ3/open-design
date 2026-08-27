@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import { Button } from '@open-design/components';
+import { HostedAuthGate } from './auth/HostedAuthGate';
 import { reportAgentDetectDiagnostics } from './analytics/agent-detect';
 import { useAnalytics } from './analytics/provider';
 import {
@@ -857,10 +858,12 @@ export function App() {
   // it they keep springing/sliding for users who asked us not to animate.
   return (
     <MotionConfig reducedMotion="user">
-      <IframeKeepAliveProvider>
-        <WorkspaceMemberDirectoryPreloader />
-        <AppInner />
-      </IframeKeepAliveProvider>
+      <HostedAuthGate>
+        <IframeKeepAliveProvider>
+          <WorkspaceMemberDirectoryPreloader />
+          <AppInner />
+        </IframeKeepAliveProvider>
+      </HostedAuthGate>
     </MotionConfig>
   );
 }

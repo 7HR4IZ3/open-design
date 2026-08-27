@@ -34,6 +34,7 @@ import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry'
 import { setComposerSeed, setDesignSystemAssetSeed, setHomeComposerAssetSeed } from '../state/libraryHandoff';
 import { Button, Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
 import { Icon } from './Icon';
+import { createHostedEventSource } from '../auth/supabase-browser';
 import {
   KindIcon,
   SOURCE_LABELS,
@@ -613,6 +614,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   // single full reload for that window.
   useEffect(() => {
     if (!active) return;
+    let disposed = false;
     let es: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const pendingIngest = new Set<string>();
@@ -654,8 +656,12 @@ export function LibrarySection({ active, onOpenProject }: Props) {
       timer = setTimeout(() => void flush(), 200);
     };
 
-    try {
-      es = new EventSource('/api/library/events');
+    const attach = (next: EventSource) => {
+      if (disposed) {
+        next.close();
+        return;
+      }
+      es = next;
       const onIngest = (ev: MessageEvent) => {
         const id = parseEventAssetId(ev.data);
         if (id) pendingIngest.add(id);
@@ -670,10 +676,17 @@ export function LibrarySection({ active, onOpenProject }: Props) {
       };
       es.addEventListener('ingest', onIngest);
       es.addEventListener('delete', onDelete);
-    } catch {
+    };
+    const created = createHostedEventSource('/api/library/events');
+    if (created instanceof EventSource) {
+      attach(created);
+    } else {
+      void created.then(attach).catch(() => {
       // EventSource unavailable — manual Refresh remains the fallback.
+      });
     }
     return () => {
+      disposed = true;
       if (timer) clearTimeout(timer);
       es?.close();
     };

@@ -6,6 +6,7 @@ import {
   HOSTED_BASH_ROOT,
   HostedBashManager,
 } from '../src/hosted-bash.js';
+import type { ProjectStorage, ProjectFileMeta } from '../src/storage/project-storage.js';
 import { registerHostedBashRoutes } from '../src/routes/hosted-bash.js';
 
 afterEach(() => {
@@ -43,6 +44,39 @@ describe('hosted just-bash workspace', () => {
     await expect(manager.execute('project-a', 'pwd', { cwd: '../../tmp' })).rejects.toThrow(
       `cwd must stay inside ${HOSTED_BASH_ROOT}`,
     );
+  });
+
+  it('hydrates and flushes a durable project storage adapter', async () => {
+    const files = new Map([['existing.txt', Buffer.from('before')]]);
+    const storage: ProjectStorage = {
+      async readFile(_projectId, relpath) {
+        const body = files.get(relpath);
+        if (!body) throw Object.assign(new Error('missing'), { code: 'NOT_FOUND' });
+        return Buffer.from(body);
+      },
+      async writeFile(_projectId, relpath, body): Promise<ProjectFileMeta> {
+        files.set(relpath, Buffer.from(body));
+        return { path: relpath, size: body.byteLength, mtimeMs: Date.now() };
+      },
+      async listFiles() {
+        return [...files].map(([path, body]) => ({ path, size: body.byteLength, mtimeMs: Date.now() }));
+      },
+      async deleteFile(_projectId, relpath) {
+        files.delete(relpath);
+      },
+      async statFile(_projectId, relpath) {
+        const body = files.get(relpath);
+        return body ? { path: relpath, size: body.byteLength, mtimeMs: Date.now() } : null;
+      },
+    };
+    const manager = new HostedBashManager({ storage });
+
+    const read = await manager.execute('project-a', 'cat existing.txt');
+    expect(read.stdout).toBe('before');
+    await manager.execute('project-a', 'printf after > next.txt && rm existing.txt');
+
+    expect(files.get('next.txt')?.toString()).toBe('after');
+    expect(files.has('existing.txt')).toBe(false);
   });
 });
 

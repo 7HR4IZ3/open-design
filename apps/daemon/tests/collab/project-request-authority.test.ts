@@ -10,6 +10,7 @@ function response() {
 function request(input: {
   workspaceId?: string;
   memberId?: string;
+  hostedUserId?: string;
   query?: Record<string, string>;
 }) {
   const headers: Record<string, string | undefined> = {
@@ -18,6 +19,9 @@ function request(input: {
   };
   return {
     query: input.query ?? {},
+    ...(input.hostedUserId
+      ? { hostedPrincipal: { kind: 'supabase' as const, userId: input.hostedUserId } }
+      : {}),
     get(name: string) {
       return headers[name.toLowerCase()];
     },
@@ -764,5 +768,36 @@ describe('createAuthorizeProjectRequest', () => {
     )).resolves.toBe(true);
     expect(verify).not.toHaveBeenCalled();
     expect(sendApiError).not.toHaveBeenCalled();
+  });
+
+  it('enforces Supabase project ownership before workspace checks', async () => {
+    const sendApiError = vi.fn();
+    const authorize = createAuthorizeProjectRequest({
+      db: {},
+      getProjectOwnerId: () => 'owner-a',
+      getWorkspaceProject: () => null,
+      getWorkspaceProjectByProjectId: () => null,
+      sendApiError,
+    });
+
+    await expect(authorize(
+      request({ hostedUserId: 'owner-b' }),
+      response(),
+      'project-a',
+      { mode: 'read' },
+    )).resolves.toBe(false);
+    expect(sendApiError).toHaveBeenCalledWith(
+      expect.anything(),
+      404,
+      'PROJECT_NOT_FOUND',
+      'project not found',
+    );
+
+    await expect(authorize(
+      request({ hostedUserId: 'owner-a' }),
+      response(),
+      'project-a',
+      { mode: 'read' },
+    )).resolves.toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import { hostedAuthPrincipalFromRequest } from '../hosted-auth.js';
 import {
   requestWithWorkspaceNavigationScope,
   workspaceResourceContextFromRequest,
@@ -211,6 +212,8 @@ export function createAuthorizeProjectRequest(deps: {
   isProjectRevoked?: (db: unknown, projectId: string) => boolean;
   /** A bound first-open placeholder may be read but is never content authority. */
   isProjectUnmaterializedPlaceholder?: (db: unknown, projectId: string) => boolean;
+  /** Hosted Supabase ownership witness for the local metadata catalog. */
+  getProjectOwnerId?: (db: unknown, projectId: string) => string | null;
   sendApiError: (
     res: Response,
     status: number,
@@ -225,6 +228,7 @@ export function createAuthorizeProjectRequest(deps: {
     getWorkspaceProjectByProjectId,
     isProjectRevoked,
     isProjectUnmaterializedPlaceholder,
+    getProjectOwnerId,
     sendApiError,
   } = deps;
   return async (req, res, projectId, options) => {
@@ -240,6 +244,21 @@ export function createAuthorizeProjectRequest(deps: {
           : 'workspace project mutation is not allowed',
       );
       return false;
+    }
+    const hostedPrincipal = hostedAuthPrincipalFromRequest(req);
+    if (hostedPrincipal && getProjectOwnerId) {
+      const ownerId = getProjectOwnerId(db, projectId);
+      if (ownerId !== hostedPrincipal.userId) {
+        sendApiError(
+          res,
+          options.mode === 'read' ? 404 : 403,
+          options.mode === 'read' ? 'PROJECT_NOT_FOUND' : 'PROJECT_PERMISSION_DENIED',
+          options.mode === 'read'
+            ? 'project not found'
+            : 'project is not owned by the authenticated user',
+        );
+        return false;
+      }
     }
     const allowed = await enforceLocalProjectDataPlaneRequest({
       req,

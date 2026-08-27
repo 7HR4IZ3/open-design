@@ -14,10 +14,8 @@
 //     implements (read / write / list / delete / stat).
 //   - `LocalProjectStorage` — a thin wrapper over the existing
 //     `apps/daemon/src/projects.ts` helpers; this is the v1 default.
-//   - `S3ProjectStorage` — a stub that mirrors the interface and
-//     records the operations it would perform. The real AWS SDK
-//     wiring is the next Phase 5 PR; the stub exists so unit tests
-//     can lock the interface contract.
+//   - `S3ProjectStorage` — an S3-compatible implementation.
+//   - `SupabaseProjectStorage` — a private Supabase Storage implementation.
 //
 // The daemon's existing project routes don't yet route through this
 // adapter — that's an opt-in flag away (`OD_PROJECT_STORAGE=s3`).
@@ -26,6 +24,7 @@
 
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { encodeS3PathSegment, signSigV4, type SigV4Credentials } from './aws-sigv4.js';
 
 export interface ProjectFileMeta {
@@ -355,6 +354,237 @@ export class S3ProjectStorage implements ProjectStorage {
   }
 }
 
+export interface SupabaseProjectStorageOptions {
+  client: SupabaseClient;
+  bucket: string;
+  /** Optional namespace inside the bucket; defaults to `projects`. */
+  prefix?: string;
+  maxListEntries?: number;
+}
+
+/**
+ * Supabase Storage adapter for hosted project files.
+ *
+ * The daemon uses a service-role client, so the bucket should remain private;
+ * all project authorization happens before this adapter is called. Files are
+ * stored under `<prefix>/<projectId>/files/<relative-path>` and are never
+ * exposed through a public bucket URL.
+ */
+export class SupabaseProjectStorage implements ProjectStorage {
+  private readonly maxListEntries: number;
+
+  constructor(public readonly options: SupabaseProjectStorageOptions) {
+    if (!options.client) throw new StorageError('IO', 'SupabaseProjectStorage requires a client');
+    if (!options.bucket) throw new StorageError('IO', 'SupabaseProjectStorage requires a bucket');
+    this.maxListEntries = options.maxListEntries ?? 10_000;
+    if (!Number.isSafeInteger(this.maxListEntries) || this.maxListEntries < 1) {
+      throw new StorageError('IO', 'SupabaseProjectStorage maxListEntries must be positive');
+    }
+  }
+
+  async readFile(projectId: string, relpath: string): Promise<Buffer> {
+    const { data, error } = await this.options.client.storage
+      .from(this.options.bucket)
+      .download(this.keyFor(projectId, relpath));
+    if (error) {
+      if (isSupabaseNotFound(error)) {
+        throw new StorageError('NOT_FOUND', `${projectId}/${relpath} not found`);
+      }
+      throw new StorageError('IO', `Supabase Storage download failed: ${error.message}`);
+    }
+    if (!data) throw new StorageError('IO', 'Supabase Storage download returned no data');
+    return Buffer.from(await data.arrayBuffer());
+  }
+
+  async writeFile(projectId: string, relpath: string, body: Buffer): Promise<ProjectFileMeta> {
+    validateStoragePath(projectId, relpath);
+    const normalized = normalizeRel(relpath);
+    const { error } = await this.options.client.storage
+      .from(this.options.bucket)
+      .upload(this.keyFor(projectId, normalized), body, {
+        upsert: true,
+        contentType: contentTypeForPath(normalized),
+      });
+    if (error) throw new StorageError('IO', `Supabase Storage upload failed: ${error.message}`);
+    return { path: normalized, size: body.byteLength, mtimeMs: Date.now() };
+  }
+
+  async listFiles(projectId: string): Promise<ProjectFileMeta[]> {
+    const root = this.folderFor(projectId);
+    const output: ProjectFileMeta[] = [];
+    const walk = async (folder: string): Promise<void> => {
+      let offset = 0;
+      const pageSize = 1000;
+      while (true) {
+        const { data, error } = await this.options.client.storage
+          .from(this.options.bucket)
+          .list(folder, {
+            limit: pageSize,
+            offset,
+            sortBy: { column: 'name', order: 'asc' },
+          });
+        if (error) throw new StorageError('IO', `Supabase Storage list failed: ${error.message}`);
+        const entries = data ?? [];
+        for (const entry of entries) {
+          if (output.length >= this.maxListEntries) {
+            throw new StorageError('IO', `Supabase Storage file limit exceeded (${this.maxListEntries})`);
+          }
+          const name = typeof entry.name === 'string' ? entry.name : '';
+          if (!name || name === '.' || name === '..') continue;
+          const child = `${folder}/${name}`;
+          // Storage folder entries have no object id; regular files do.
+          if (!entry.id) {
+            await walk(child);
+            continue;
+          }
+          const rel = child.slice(`${root}/`.length);
+          const metadata = entry.metadata as Record<string, unknown> | null | undefined;
+          const size = Number(metadata?.size ?? 0);
+          const updatedAt = typeof entry.updated_at === 'string' ? Date.parse(entry.updated_at) : NaN;
+          output.push({
+            path: rel,
+            size: Number.isFinite(size) ? size : 0,
+            mtimeMs: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+          });
+        }
+        if (entries.length < pageSize) break;
+        offset += entries.length;
+      }
+    };
+    await walk(root);
+    return output;
+  }
+
+  async deleteFile(projectId: string, relpath: string): Promise<void> {
+    const { error } = await this.options.client.storage
+      .from(this.options.bucket)
+      .remove([this.keyFor(projectId, relpath)]);
+    if (error && !isSupabaseNotFound(error)) {
+      throw new StorageError('IO', `Supabase Storage delete failed: ${error.message}`);
+    }
+  }
+
+  async statFile(projectId: string, relpath: string): Promise<ProjectFileMeta | null> {
+    validateStoragePath(projectId, relpath);
+    const normalized = normalizeRel(relpath);
+    const slash = normalized.lastIndexOf('/');
+    const parent = slash < 0
+      ? this.folderFor(projectId)
+      : `${this.folderFor(projectId)}/${normalized.slice(0, slash)}`;
+    const filename = normalized.slice(slash + 1);
+    const { data, error } = await this.options.client.storage
+      .from(this.options.bucket)
+      .list(parent, { limit: 1000, offset: 0 });
+    if (error) throw new StorageError('IO', `Supabase Storage list failed: ${error.message}`);
+    const entry = (data ?? []).find((item) => item.id && item.name === filename);
+    if (!entry) return null;
+    const metadata = entry.metadata as Record<string, unknown> | null | undefined;
+    const size = Number(metadata?.size ?? 0);
+    const updatedAt = typeof entry.updated_at === 'string' ? Date.parse(entry.updated_at) : NaN;
+    return {
+      path: normalized,
+      size: Number.isFinite(size) ? size : 0,
+      mtimeMs: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+    };
+  }
+
+  keyFor(projectId: string, relpath: string): string {
+    validateStoragePath(projectId, relpath);
+    return `${this.folderFor(projectId)}/${normalizeRel(relpath)}`;
+  }
+
+  private folderFor(projectId: string): string {
+    validateStorageProjectId(projectId);
+    const prefix = (this.options.prefix?.trim() || 'projects').replace(/^\/+|\/+$/g, '');
+    return `${prefix}/${projectId}/files`;
+  }
+}
+
+/**
+ * Keeps the ephemeral local project view warm while Supabase is authoritative.
+ * The local copy is useful for preview/rendering code that still expects a
+ * filesystem path; failures in the local mirror never make a successful cloud
+ * write look failed.
+ */
+export class MirroredProjectStorage implements ProjectStorage {
+  constructor(
+    public readonly remote: ProjectStorage,
+    public readonly local: ProjectStorage,
+  ) {}
+
+  async readFile(projectId: string, relpath: string): Promise<Buffer> {
+    const body = await this.remote.readFile(projectId, relpath);
+    await this.mirrorWrite(projectId, relpath, body);
+    return body;
+  }
+
+  async writeFile(projectId: string, relpath: string, body: Buffer): Promise<ProjectFileMeta> {
+    const meta = await this.remote.writeFile(projectId, relpath, body);
+    await this.mirrorWrite(projectId, relpath, body);
+    return meta;
+  }
+
+  listFiles(projectId: string): Promise<ProjectFileMeta[]> {
+    return this.remote.listFiles(projectId);
+  }
+
+  async deleteFile(projectId: string, relpath: string): Promise<void> {
+    await this.remote.deleteFile(projectId, relpath);
+    try {
+      await this.local.deleteFile(projectId, relpath);
+    } catch (error) {
+      console.warn('[project-storage] local mirror delete failed', error);
+    }
+  }
+
+  async statFile(projectId: string, relpath: string): Promise<ProjectFileMeta | null> {
+    return this.remote.statFile(projectId, relpath);
+  }
+
+  private async mirrorWrite(projectId: string, relpath: string, body: Buffer): Promise<void> {
+    try {
+      await this.local.writeFile(projectId, relpath, body);
+    } catch (error) {
+      console.warn('[project-storage] local mirror write failed', error);
+    }
+  }
+}
+
+function validateStorageProjectId(projectId: string): void {
+  if (!projectId || projectId.includes('/') || projectId.includes('\\') || projectId.includes('\0') || projectId.includes('..')) {
+    throw new StorageError('TRAVERSAL', `invalid projectId ${projectId}`);
+  }
+}
+
+function validateStoragePath(projectId: string, relpath: string): void {
+  validateStorageProjectId(projectId);
+  if (typeof relpath !== 'string' || /^[\\/]/u.test(relpath)) {
+    throw new StorageError('TRAVERSAL', `unsafe relpath ${relpath}`);
+  }
+  const normalized = normalizeRel(relpath);
+  if (!normalized || normalized.split('/').some((segment) => segment === '..' || segment === '.')) {
+    throw new StorageError('TRAVERSAL', `unsafe relpath ${relpath}`);
+  }
+}
+
+function isSupabaseNotFound(error: { status?: number | undefined; message?: string | undefined }): boolean {
+  return error.status === 404 || /not found|does not exist|no such/i.test(error.message ?? '');
+}
+
+function contentTypeForPath(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  const types: Record<string, string> = {
+    '.css': 'text/css',
+    '.html': 'text/html',
+    '.js': 'text/javascript',
+    '.json': 'application/json',
+    '.md': 'text/markdown',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain',
+  };
+  return types[extension] ?? 'application/octet-stream';
+}
+
 interface ListBucketEntry { key: string; size: number; lastModifiedMs: number }
 
 function parseListBucketV2Xml(xml: string): { entries: ListBucketEntry[]; isTruncated: boolean; nextToken?: string } {
@@ -398,8 +628,9 @@ async function safeText(res: Response): Promise<string> {
 
 /**
  * Resolve the daemon-wide project storage adapter from environment.
- * Default is local-disk; setting OD_PROJECT_STORAGE=s3 pulls the
- * stub above (and will pull the real impl once it lands).
+ * Default is local-disk. Supabase uses a private Storage bucket and a
+ * daemon-only service-role key; the public publishable key must never be used
+ * here.
  */
 export function resolveProjectStorage(opts: {
   projectsRoot: string;
@@ -423,6 +654,27 @@ export function resolveProjectStorage(opts: {
       ...(env.OD_S3_PREFIX   ? { prefix:   env.OD_S3_PREFIX }   : {}),
       ...(env.OD_S3_ENDPOINT ? { endpoint: env.OD_S3_ENDPOINT } : {}),
       credentials,
+    });
+  }
+  if (kind === 'supabase') {
+    const url = env.SUPABASE_URL?.trim() ?? '';
+    const serviceRoleKey = (
+      env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+      || env.SUPABASE_SECRET_KEY?.trim()
+      || ''
+    );
+    if (!url || !serviceRoleKey) {
+      throw new StorageError(
+        'IO',
+        'OD_PROJECT_STORAGE=supabase requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY',
+      );
+    }
+    return new SupabaseProjectStorage({
+      client: createClient(url, serviceRoleKey, {
+        auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+      }),
+      bucket: env.SUPABASE_STORAGE_BUCKET ?? 'open-design-projects',
+      ...(env.SUPABASE_STORAGE_PREFIX ? { prefix: env.SUPABASE_STORAGE_PREFIX } : {}),
     });
   }
   return new LocalProjectStorage(opts.projectsRoot);

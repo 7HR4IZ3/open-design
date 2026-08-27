@@ -90,7 +90,7 @@ async function execute(
     res.json({
       ok: result.exitCode === 0,
       backend: 'just-bash',
-      persistence: 'daemon-memory-only',
+      persistence: bash.persistence,
       projectId,
       ...result,
     });

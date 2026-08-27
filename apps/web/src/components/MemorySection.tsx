@@ -38,6 +38,7 @@ import {
 } from '../providers/registry';
 import { notifyConnectorsChanged } from './connectors-events';
 import { hasConnectorStatusChanges } from './connectors-state';
+import { createHostedEventSource } from '../auth/supabase-browser';
 import { MemoryProfilePanel } from './MemoryProfilePanel';
 import { MemoryHooksPanel, type MemoryHookKey } from './MemoryHooksPanel';
 
@@ -925,8 +926,15 @@ export function MemorySection({
   // so we just always reload on any change. EventSource auto-reconnects
   // on temporary daemon hiccups.
   useEffect(() => {
-    const es = new EventSource('/api/memory/events');
-    es.addEventListener('change', (raw) => {
+    let es: EventSource | null = null;
+    let active = true;
+    const attach = (next: EventSource) => {
+      if (!active) {
+        next.close();
+        return;
+      }
+      es = next;
+      es.addEventListener('change', (raw) => {
       try {
         const ev = JSON.parse((raw as MessageEvent).data) as MemoryChangeEvent;
         // Don't reload if the event payload is just a connection ping.
@@ -935,8 +943,8 @@ export function MemorySection({
       } catch {
         // Malformed — ignore.
       }
-    });
-    es.addEventListener('extraction', (raw) => {
+      });
+      es.addEventListener('extraction', (raw) => {
       try {
         const ev = JSON.parse((raw as MessageEvent).data) as MemoryExtractionEvent;
         if (!ev || !ev.id) return;
@@ -967,9 +975,19 @@ export function MemorySection({
       } catch {
         // Malformed — ignore.
       }
-    });
+      });
+    };
+    const created = createHostedEventSource('/api/memory/events');
+    if (created instanceof EventSource) {
+      attach(created);
+    } else {
+      void created.then(attach).catch(() => {
+      // EventSource unavailable or auth not ready; the initial fetch remains.
+      });
+    }
     return () => {
-      es.close();
+      active = false;
+      es?.close();
     };
   }, [reload]);
 

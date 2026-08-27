@@ -8,6 +8,7 @@ import type {
 } from '@open-design/contracts';
 import { useT } from '../../i18n';
 import { Icon } from '../Icon';
+import { createHostedEventSource } from '../../auth/supabase-browser';
 import {
   createTerminal,
   killTerminal,
@@ -295,9 +296,13 @@ export function TerminalViewer({
 
       // SSE down. EventSource auto-reconnects with Last-Event-ID, so the daemon
       // replays buffered output we missed during a transient gap.
-      const es = new EventSource(
+      const es = await createHostedEventSource(
         terminalStreamUrl(projectId, sessionId, workspaceContext),
       );
+      if (disposed) {
+        es.close();
+        return;
+      }
       source = es;
       es.addEventListener('open', () => {
         setPhase((prev) => (prev === 'ended' ? prev : 'live'));

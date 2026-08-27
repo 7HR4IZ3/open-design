@@ -46,6 +46,7 @@ import {
 } from './brands/index.js';
 import { patchMeta } from './brands/store.js';
 import type { BrandDetailResponse, BrandMeta, BrandSummary } from '@open-design/contracts';
+import { hostedAuthPrincipalFromRequest } from './hosted-auth.js';
 
 export interface BrandRoutesDeps {
   /** `<dataDir>/brands` — root of all brand directories. */
@@ -349,6 +350,7 @@ export function registerBrandRoutes(app: Application, deps: BrandRoutesDeps): vo
         projectsRoot,
         skillsRoot,
         db,
+        ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
         // Passing the registry root + data dir switches on the programmatic-first
         // extraction: the daemon seeds the real transcript and skeleton before
         // returning, then harvests + synthesizes + finalizes the design system

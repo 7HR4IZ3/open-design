@@ -718,6 +718,7 @@ import {
   getProjectCommentAnchorConversationId,
   getProjectPreviewComment,
   getProject,
+  getProjectOwnerId,
   countWorkspaceProjectRefs,
   findTeamWorkspaceIdForProject,
   getWorkspaceProject,
@@ -1136,6 +1137,17 @@ import {
 import { renderOAuthResultPage } from './http/oauth-result-page.js';
 import { bearerTokenFromRequest, createToolRequestAuth } from './http/tool-request-auth.js';
 import { HostedBashManager } from './hosted-bash.js';
+import {
+  LocalProjectStorage,
+  MirroredProjectStorage,
+  resolveProjectStorage,
+} from './storage/project-storage.js';
+import {
+  createHostedAuthMiddleware,
+  createHostedAuthVerifier,
+  hostedAuthPrincipalFromRequest,
+  resolveHostedAuthConfig,
+} from './hosted-auth.js';
 
 /** @typedef {import('@open-design/contracts').ApiErrorCode} ApiErrorCode */
 /** @typedef {import('@open-design/contracts').ApiError} ApiError */
@@ -2870,20 +2882,33 @@ export async function startServer({
   const apiToken = apiTokenFromEnv();
   const apiAuthDisabled = isApiAuthDisabled();
   const apiTokenAuthEnabled = apiToken.length > 0 && !apiAuthDisabled;
+  const hostedAuthConfig = resolveHostedAuthConfig();
+  const hostedAuthEnabled = hostedAuthConfig !== null;
+  const hostedAuthVerifier = hostedAuthConfig
+    ? createHostedAuthVerifier(hostedAuthConfig)
+    : null;
   const isApiTokenAuthorization = (authorization: string | undefined): boolean =>
     apiTokenAuthEnabled && apiTokenAuthorizationMatches(authorization, apiToken);
-  if (!isLoopbackHostname(host) && apiToken.length === 0 && !apiAuthDisabled) {
+  if (!isLoopbackHostname(host) && apiToken.length === 0 && !hostedAuthEnabled && !apiAuthDisabled) {
     throw new Error(
-      `OD_BIND_HOST=${host} requires OD_API_TOKEN to be set. ` +
+      `OD_BIND_HOST=${host} requires OD_API_TOKEN or hosted Supabase auth to be set. ` +
       `Generate one with \`openssl rand -hex 32\` and re-launch. ` +
       `(Loopback hosts 127.0.0.1 / ::1 / localhost do not need a token.) ` +
+      `For Supabase, set OD_HOSTED_AUTH_REQUIRED=1, SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY. ` +
       `Set OD_DISABLE_API_AUTH=1 only when a trusted reverse proxy already authenticates every request.`,
     );
   }
 
   const app = express();
   installRouteRegistrationGuard(app);
-  const hostedBash = new HostedBashManager();
+  const configuredProjectStorage = (process.env.OD_PROJECT_STORAGE ?? 'local').trim().toLowerCase();
+  const hostedBashStorage = configuredProjectStorage === 'supabase'
+    ? new MirroredProjectStorage(
+      resolveProjectStorage({ projectsRoot: PROJECTS_DIR }),
+      new LocalProjectStorage(PROJECTS_DIR),
+    )
+    : null;
+  const hostedBash = new HostedBashManager({ storage: hostedBashStorage });
   // Clipper page captures are self-contained HTML with inlined images plus a
   // Figma IR, which for an image-heavy site (The Economist, news front pages)
   // runs to tens of MB — far past a normal JSON body. Give the ingest route a
@@ -2939,6 +2964,12 @@ export async function startServer({
       // UI which has no proxy in the path.
       if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
       if (apiTokenAuthorizationMatches(req.get('authorization'), apiToken)) return next();
+      // Hosted Supabase bearer tokens are verified by the middleware below.
+      // Keep the legacy API-token and browser Basic paths intact when both
+      // auth modes are configured during a staged rollout.
+      if (hostedAuthEnabled && /^Bearer[\t ]+\S+/i.test(req.get('authorization') ?? '')) {
+        return next();
+      }
       if (
         req.method === 'POST'
         && PROJECT_RUN_SCOPED_EXPORT_PATH_RE.test(req.path)
@@ -2975,6 +3006,41 @@ export async function startServer({
       );
     });
   }
+
+  if (hostedAuthVerifier) {
+    app.use('/api', createHostedAuthMiddleware({
+      verifier: hostedAuthVerifier,
+      // EventSource has no header API. Query credentials are accepted only on
+      // these four known streams and are never a general API fallback.
+      queryTokenPaths: [
+        /^\/memory\/events$/u,
+        /^\/library\/events$/u,
+        /^\/projects\/[^/]+\/terminals\/[^/]+\/stream$/u,
+      ],
+      allowUnauthenticated: (req) => {
+        if (req.path.startsWith('/tools/')) return true;
+        if (req.method !== 'GET') return false;
+        const previewAsset = parseProjectPreviewAssetPath(req.path);
+        return Boolean(
+          previewAsset
+          && projectPreviewScopes.validate(previewAsset.projectId, previewAsset.scope),
+        );
+      },
+    }));
+  }
+
+  // A small diagnostic surface for hosted clients and deployment probes. The
+  // auth middleware above supplies the principal when hosted auth is enabled;
+  // local mode intentionally reports an anonymous user for compatibility.
+  app.get('/api/auth/me', (req, res) => {
+    const principal = hostedAuthPrincipalFromRequest(req);
+    res.json({
+      authenticated: principal !== null,
+      user: principal
+        ? { id: principal.userId, ...(principal.email ? { email: principal.email } : {}) }
+        : null,
+    });
+  });
 
   const designSystemServices = createDesignSystemServerServices({
     // `db` (below) is not initialized yet at this point in `startServer` —
@@ -7835,6 +7901,7 @@ export async function startServer({
       revokedTeamProjectMirrors.has(projectId),
     isProjectUnmaterializedPlaceholder: (_db, projectId) =>
       projectIsUnmaterializedSharedPlaceholder(projectId),
+    getProjectOwnerId,
     sendApiError,
   });
   // Legacy registrars still receive the historical bound mutation-gate shape,
@@ -7875,20 +7942,193 @@ export async function startServer({
       },
     };
   };
+  const durableProjectStorage = hostedBashStorage;
+  const isDurableProject = (metadata: any): boolean =>
+    durableProjectStorage !== null
+    && !(typeof metadata?.baseDir === 'string' && path.isAbsolute(path.normalize(metadata.baseDir)));
+  const hostedFileKind = (name: string): string => {
+    if (/\.html?$/i.test(name)) return 'html';
+    if (/\.css$/i.test(name)) return 'css';
+    if (/\.[cm]?[jt]sx?$/i.test(name)) return 'code';
+    if (/\.(png|jpe?g|gif|webp|svg|ico)$/i.test(name)) return 'image';
+    if (/\.(woff2?|ttf|otf)$/i.test(name)) return 'font';
+    if (/\.md$/i.test(name)) return 'markdown';
+    return 'file';
+  };
+  const readRemoteArtifactManifest = async (projectId: string, name: string) => {
+    if (!durableProjectStorage) return undefined;
+    try {
+      const raw = await durableProjectStorage.readFile(projectId, `${name}.artifact.json`);
+      return JSON.parse(raw.toString('utf8'));
+    } catch {
+      return undefined;
+    }
+  };
+  const syncDurableProjectToLocal = async (projectId: string, metadata?: any) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) return;
+    await ensureProject(PROJECTS_DIR, projectId, metadata);
+    const remoteFiles = await durableProjectStorage.listFiles(projectId);
+    for (const file of remoteFiles) {
+      if (file.path.endsWith('.artifact.json')) continue;
+      const body = await durableProjectStorage.readFile(projectId, file.path);
+      await writeProjectFile(PROJECTS_DIR, projectId, file.path, body, { overwrite: true }, metadata);
+      const manifest = await readRemoteArtifactManifest(projectId, file.path);
+      if (manifest) {
+        await writeProjectFile(
+          PROJECTS_DIR,
+          projectId,
+          `${file.path}.artifact.json`,
+          Buffer.from(JSON.stringify(manifest, null, 2)),
+          { overwrite: true },
+          metadata,
+        );
+      }
+    }
+  };
+  const durableListFiles = async (root: string, projectId: string, opts: any = {}) => {
+    if (!durableProjectStorage || !isDurableProject(opts?.metadata)) {
+      return listFiles(root, projectId, opts);
+    }
+    const files = await durableProjectStorage.listFiles(projectId);
+    const since = Number(opts?.since);
+    return files
+      .filter((file) => !file.path.endsWith('.artifact.json'))
+      .filter((file) => !Number.isFinite(since) || since <= 0 || file.mtimeMs > since)
+      .map((file) => ({
+        name: file.path,
+        path: file.path,
+        type: 'file',
+        size: file.size,
+        mtime: file.mtimeMs,
+        mime: mimeFor(file.path),
+        kind: hostedFileKind(file.path),
+      }));
+  };
+  const durableReadProjectFile = async (root: string, projectId: string, name: string, metadata?: any) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) {
+      return readProjectFile(root, projectId, name, metadata);
+    }
+    const safeName = sanitizePath(name);
+    try {
+      const [body, stat] = await Promise.all([
+        durableProjectStorage.readFile(projectId, safeName),
+        durableProjectStorage.statFile(projectId, safeName),
+      ]);
+      const manifest = await readRemoteArtifactManifest(projectId, safeName);
+      return {
+        buffer: body,
+        name: safeName,
+        path: safeName,
+        size: body.byteLength,
+        mtime: stat?.mtimeMs ?? Date.now(),
+        mime: mimeFor(safeName),
+        kind: hostedFileKind(safeName),
+        artifactKind: manifest?.kind,
+        artifactManifest: manifest,
+      };
+    } catch (error: any) {
+      if (error?.code !== 'NOT_FOUND') throw error;
+      // One-time compatibility migration for projects created before cloud
+      // storage was enabled: read the local copy and seed the remote object.
+      const local = await readProjectFile(root, projectId, safeName, metadata);
+      await durableProjectStorage.writeFile(projectId, safeName, local.buffer);
+      if (local.artifactManifest) {
+        await durableProjectStorage.writeFile(
+          projectId,
+          `${safeName}.artifact.json`,
+          Buffer.from(JSON.stringify(local.artifactManifest, null, 2)),
+        );
+      }
+      return local;
+    }
+  };
+  const durableWriteProjectFile = async (
+    root: string,
+    projectId: string,
+    name: string,
+    body: Buffer | string,
+    options: any = {},
+    metadata?: any,
+  ) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) {
+      return writeProjectFile(root, projectId, name, body, options, metadata);
+    }
+    await syncDurableProjectToLocal(projectId, metadata);
+    const result = await writeProjectFile(root, projectId, name, body, options, metadata);
+    const saved = await readProjectFile(root, projectId, result.name, metadata);
+    await durableProjectStorage.writeFile(projectId, result.name, saved.buffer);
+    if (saved.artifactManifest) {
+      await durableProjectStorage.writeFile(
+        projectId,
+        `${result.name}.artifact.json`,
+        Buffer.from(JSON.stringify(saved.artifactManifest, null, 2)),
+      );
+    }
+    return result;
+  };
+  const durableDeleteProjectFile = async (root: string, projectId: string, name: string, metadata?: any) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) {
+      return deleteProjectFile(root, projectId, name, metadata);
+    }
+    const safeName = sanitizePath(name);
+    await durableProjectStorage.deleteFile(projectId, safeName);
+    await durableProjectStorage.deleteFile(projectId, `${safeName}.artifact.json`);
+    return deleteProjectFile(root, projectId, safeName, metadata).catch((error: any) => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+  };
+  const durableRenameProjectFile = async (
+    root: string,
+    projectId: string,
+    fromName: string,
+    toName: string,
+    metadata?: any,
+  ) => {
+    if (!durableProjectStorage || !isDurableProject(metadata)) {
+      return renameProjectFile(root, projectId, fromName, toName, metadata);
+    }
+    await syncDurableProjectToLocal(projectId, metadata);
+    const result = await renameProjectFile(root, projectId, fromName, toName, metadata);
+    const saved = await readProjectFile(root, projectId, result.newName, metadata);
+    await durableProjectStorage.deleteFile(projectId, result.oldName);
+    await durableProjectStorage.deleteFile(projectId, `${result.oldName}.artifact.json`);
+    await durableProjectStorage.writeFile(projectId, result.newName, saved.buffer);
+    if (saved.artifactManifest) {
+      await durableProjectStorage.writeFile(
+        projectId,
+        `${result.newName}.artifact.json`,
+        Buffer.from(JSON.stringify(saved.artifactManifest, null, 2)),
+      );
+    }
+    return result;
+  };
+  const durableEnsureProject = async (root: string, projectId: string, metadata?: any) => {
+    const result = await ensureProject(root, projectId, metadata);
+    await syncDurableProjectToLocal(projectId, metadata);
+    return result;
+  };
+  const durableResolveProjectFilePath = async (root: string, projectId: string, name: string, metadata?: any) => {
+    await syncDurableProjectToLocal(projectId, metadata);
+    return resolveProjectFilePath(root, projectId, name, metadata);
+  };
+  const durableSearchProjectFiles = async (root: string, projectId: string, query: string, opts: any = {}) => {
+    await syncDurableProjectToLocal(projectId, opts?.metadata);
+    return searchProjectFiles(root, projectId, query, opts);
+  };
   const projectFileDeps = {
-    ensureProject,
-    listFiles,
+    ensureProject: durableEnsureProject,
+    listFiles: durableListFiles,
     listProjectFolders,
     createProjectFolder,
     deleteProjectFolder,
-    searchProjectFiles,
-    readProjectFile,
+    searchProjectFiles: durableSearchProjectFiles,
+    readProjectFile: durableReadProjectFile,
     resolveProjectDir,
-    resolveProjectFilePath,
+    resolveProjectFilePath: durableResolveProjectFilePath,
     parseByteRange,
-    renameProjectFile,
-    deleteProjectFile,
-    writeProjectFile,
+    renameProjectFile: durableRenameProjectFile,
+    deleteProjectFile: durableDeleteProjectFile,
+    writeProjectFile: durableWriteProjectFile,
     sanitizeName,
     sanitizePath,
     listTabs,

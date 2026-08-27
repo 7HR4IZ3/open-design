@@ -48,6 +48,7 @@ import {
 } from './collab/created-project-workspace.js';
 import type { WorkspaceDirectoryFetchResult } from './collab/vela-workspace-context.js';
 import type { BoundWorkspaceResourceMutationGate } from './collab/workspace-resource-mutation.js';
+import { hostedAuthPrincipalFromRequest } from './hosted-auth.js';
 
 export interface RegisterImportRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'ids' | 'paths' | 'imports' | 'auth' | 'projectStore' | 'conversations' | 'projectFiles' | 'validation'> {
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
@@ -143,6 +144,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
           const createdProject = insertProject(db, {
             id,
             name: baseName,
+            ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
             skillId: null,
             designSystemId: null,
             pendingPrompt: `Imported from Claude Design ZIP: ${originalName}. Continue editing ${imported.entryFile}.`,
@@ -491,6 +493,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         const createdProject = insertProject(db, {
           id,
           name: projectName,
+          ownerId: hostedAuthPrincipalFromRequest(req)?.userId ?? null,
           skillId: skillValidation.id,
           designSystemId: designSystemValidation.id,
           pendingPrompt: null,

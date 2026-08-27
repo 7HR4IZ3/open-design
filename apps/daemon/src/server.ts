@@ -1142,6 +1142,12 @@ import {
   MirroredProjectStorage,
   resolveProjectStorage,
 } from './storage/project-storage.js';
+import { resolveDaemonDbConfig } from './storage/daemon-db.js';
+import {
+  createSupabaseSqliteSnapshotStore,
+  restoreSqliteSnapshot,
+  SqliteSnapshotPersistence,
+} from './storage/sqlite-snapshot.js';
 import {
   createHostedAuthMiddleware,
   createHostedAuthVerifier,
@@ -2901,6 +2907,16 @@ export async function startServer({
 
   const app = express();
   installRouteRegistrationGuard(app);
+  const daemonDbConfig = resolveDaemonDbConfig(process.env);
+  if (daemonDbConfig.kind === 'postgres') {
+    throw new Error(
+      'OD_DAEMON_DB=postgres is reserved for the relational Postgres adapter and is not available yet. ' +
+      'Use OD_DAEMON_DB=supabase-snapshot for single-instance hosted durability, or omit it for local SQLite.',
+    );
+  }
+  const databaseSnapshotStore = daemonDbConfig.kind === 'supabase-snapshot'
+    ? createSupabaseSqliteSnapshotStore(process.env)
+    : null;
   const configuredProjectStorage = (process.env.OD_PROJECT_STORAGE ?? 'local').trim().toLowerCase();
   const hostedBashStorage = configuredProjectStorage === 'supabase'
     ? new MirroredProjectStorage(
@@ -3225,7 +3241,42 @@ export async function startServer({
     }
     next();
   });
+  const databaseFile = path.join(RUNTIME_DATA_DIR, 'app.sqlite');
+  if (databaseSnapshotStore) {
+    const restored = await restoreSqliteSnapshot({
+      targetFile: databaseFile,
+      store: databaseSnapshotStore,
+      mode: daemonDbConfig.supabase?.restore ?? 'if-missing',
+    });
+    if (restored.restored) {
+      console.log(
+        `[db-snapshot] restored hosted metadata database${restored.localBackupFile ? `; local copy preserved at ${restored.localBackupFile}` : ''}`,
+      );
+    }
+  }
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
+  const dbSnapshotPersistence = databaseSnapshotStore
+    ? new SqliteSnapshotPersistence({
+      db,
+      store: databaseSnapshotStore,
+      flushIntervalMs: Number.parseInt(process.env.OD_DAEMON_DB_SNAPSHOT_INTERVAL_MS ?? '', 10),
+    })
+    : null;
+  if (dbSnapshotPersistence) {
+    // Fail startup when the initial hosted snapshot cannot be written. This
+    // avoids presenting an apparently healthy Render service that is already
+    // falling back to ephemeral SQLite.
+    await dbSnapshotPersistence.flushNow({ force: true });
+    dbSnapshotPersistence.start();
+    app.use((req, res, next) => {
+      res.once('finish', () => {
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+          dbSnapshotPersistence.markDirty();
+        }
+      });
+      next();
+    });
+  }
   const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
   if (commentAnchorRepair.created > 0) {
     console.warn(
@@ -3240,6 +3291,7 @@ export async function startServer({
   } catch {
     // best-effort: a fresh db with no library_tokens is fine
   }
+  dbSnapshotPersistence?.markDirty();
   const pluginInstallation = createPluginInstallationHelpers({
     db,
     installFromLocalFolder,
@@ -16751,6 +16803,13 @@ export async function startServer({
       await terminalService.shutdownActive();
       await browserSessionService.shutdownActive();
       await design.analytics.shutdown();
+      if (dbSnapshotPersistence) {
+        try {
+          await dbSnapshotPersistence.shutdown();
+        } catch (error) {
+          console.error('[db-snapshot] final flush failed', error);
+        }
+      }
     };
     let server;
     try {

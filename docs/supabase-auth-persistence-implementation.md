@@ -13,14 +13,17 @@ The current branch now contains the first hosted slice:
   mirroring for preview code, and explicit delete/write behavior;
 - project-scoped `just-bash` hydration and flush across daemon restarts when
   `OD_PROJECT_STORAGE=supabase` is enabled;
+- an explicit `OD_DAEMON_DB=supabase-snapshot` bridge that restores and uploads
+  consistent SQLite backups through a private Supabase database bucket, with
+  mutation-triggered and periodic flushes;
 - the hosted persistence foundation migration in
   `supabase/migrations/0001_hosted_persistence_foundation.sql`.
 
-The daemon's complete metadata graph still runs on SQLite in this checkpoint.
-The Postgres tables below are the migration foundation, not a claim that
-conversations, messages, runs, tabs, deployments, and collaboration metadata
-have already moved. Hosted deployment should therefore treat this as the file
-storage/auth slice until the Postgres adapter and import path are completed.
+The daemon's complete metadata graph still runs on SQLite in this checkpoint,
+but the snapshot bridge makes that graph restart-safe for one active daemon
+writer. The Postgres tables below remain the relational migration foundation;
+they are not a claim that the synchronous call sites have already moved to
+Postgres or that multiple daemon replicas may write the same snapshot.
 
 ## Phase 0 — committed design baseline
 
@@ -51,6 +54,7 @@ storage/auth slice until the Postgres adapter and import path are completed.
 ## Phase 3 — Postgres persistence
 
 - [x] Create the hosted persistence foundation migration.
+- [x] Add a single-instance SQLite snapshot bridge for hosted restart safety.
 - [ ] Port project metadata and ownership into the live daemon database path.
 - [ ] Port conversations, messages, tabs, and required run metadata.
 - [ ] Add ownership-aware queries and indexes.

@@ -308,6 +308,32 @@ describe('resolveDaemonDbConfig', () => {
     });
   });
 
+  it('parses the hosted SQLite snapshot bridge without returning secrets', () => {
+    const cfg = resolveDaemonDbConfig({
+      OD_DAEMON_DB: 'supabase-snapshot',
+      SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'server-secret',
+      SUPABASE_DATABASE_BUCKET: 'od-db',
+      SUPABASE_DATABASE_PREFIX: 'render-a',
+      OD_DAEMON_DB_RESTORE: 'always',
+    });
+    expect(cfg).toEqual({
+      kind: 'supabase-snapshot',
+      supabase: {
+        url: 'https://example.supabase.co',
+        bucket: 'od-db',
+        prefix: 'render-a',
+        restore: 'always',
+      },
+    });
+    expect(JSON.stringify(cfg)).not.toContain('server-secret');
+  });
+
+  it('requires Supabase credentials for the hosted SQLite snapshot bridge', () => {
+    expect(() => resolveDaemonDbConfig({ OD_DAEMON_DB: 'supabase-snapshot' }))
+      .toThrow(DaemonDbConfigError);
+  });
+
   it('throws when postgres env vars are incomplete', () => {
     expect(() =>
       resolveDaemonDbConfig({ OD_DAEMON_DB: 'postgres', OD_PG_HOST: 'pg.local' }),

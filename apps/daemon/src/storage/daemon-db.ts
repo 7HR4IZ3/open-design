@@ -1,19 +1,16 @@
-// Phase 5 / spec §15.6 — `DaemonDb` adapter stub.
+// Phase 5 / spec §15.6 — daemon metadata backend selection.
 //
 // Spec §15.6 calls out a Postgres adapter so multi-replica daemons
-// can share state behind a load balancer. v1 ships local SQLite via
-// better-sqlite3 (already in `apps/daemon/src/db.ts`). The full lift
-// is a substantial migration; this module is the substrate slice
-// that pins the parameter surface so a follow-up PR can land the
-// adapter without re-litigating the env-var contract.
+// can share state behind a load balancer. The daemon still uses local
+// SQLite for its synchronous data-access surface. Hosted single-instance
+// deployments may select the explicit `supabase-snapshot` bridge, which
+// stores consistent SQLite backups in Supabase Storage while the relational
+// Postgres adapter is migrated incrementally.
 //
-// Today's resolver simply records the operator's choice; the
-// existing better-sqlite3 path is the only reachable backend.
-// `OD_DAEMON_DB=postgres` returns a stub that throws when used so
-// a misconfigured operator sees a clear error instead of silently
-// dropping writes onto a non-existent backend.
+// `OD_DAEMON_DB=postgres` remains reserved for the future relational adapter.
+// The server rejects it rather than silently dropping writes onto SQLite.
 
-export type DaemonDbKind = 'sqlite' | 'postgres';
+export type DaemonDbKind = 'sqlite' | 'postgres' | 'supabase-snapshot';
 
 export interface DaemonDbConfig {
   kind: DaemonDbKind;
@@ -27,6 +24,12 @@ export interface DaemonDbConfig {
     // matching secret manager; we never read them through env at this
     // layer.
     sslMode?: 'disable' | 'require' | 'verify-full';
+  };
+  supabase?: {
+    url: string;
+    bucket: string;
+    prefix: string;
+    restore: 'if-missing' | 'always';
   };
 }
 
@@ -65,9 +68,37 @@ export function resolveDaemonDbConfig(env?: Record<string, string | undefined>):
       },
     };
   }
+  if (kind === 'supabase-snapshot') {
+    const url = e.SUPABASE_URL?.trim() ?? '';
+    const serviceRoleKey = (
+      e.SUPABASE_SERVICE_ROLE_KEY?.trim()
+      || e.SUPABASE_SECRET_KEY?.trim()
+      || ''
+    );
+    if (!url || !serviceRoleKey) {
+      throw new DaemonDbConfigError(
+        'OD_DAEMON_DB=supabase-snapshot requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+      );
+    }
+    const restore = (e.OD_DAEMON_DB_RESTORE ?? 'if-missing').trim().toLowerCase();
+    if (restore !== 'if-missing' && restore !== 'always') {
+      throw new DaemonDbConfigError(
+        `unknown OD_DAEMON_DB_RESTORE value '${restore}'. Accepted: 'if-missing' (default), 'always'.`,
+      );
+    }
+    return {
+      kind: 'supabase-snapshot',
+      supabase: {
+        url,
+        bucket: (e.SUPABASE_DATABASE_BUCKET ?? 'open-design-database').trim(),
+        prefix: (e.SUPABASE_DATABASE_PREFIX ?? 'daemon').trim(),
+        restore,
+      },
+    };
+  }
   if (kind !== 'sqlite' && kind !== '') {
     throw new DaemonDbConfigError(
-      `unknown OD_DAEMON_DB value '${kind}'. Accepted: 'sqlite' (default), 'postgres'.`,
+      `unknown OD_DAEMON_DB value '${kind}'. Accepted: 'sqlite' (default), 'supabase-snapshot', 'postgres'.`,
     );
   }
   return { kind: 'sqlite' };

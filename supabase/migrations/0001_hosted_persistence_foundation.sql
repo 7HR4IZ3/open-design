@@ -101,6 +101,14 @@ insert into storage.buckets (id, name, public)
 values ('open-design-projects', 'open-design-projects', false)
 on conflict (id) do update set public = false;
 
+-- Transitional hosted metadata bridge. The daemon stores a consistent
+-- better-sqlite3 backup here while the synchronous SQLite data-access surface
+-- is migrated to relational Postgres. Keep this bucket private; only the
+-- daemon's service-role client may read or write the snapshot.
+insert into storage.buckets (id, name, public)
+values ('open-design-database', 'open-design-database', false)
+on conflict (id) do update set public = false;
+
 create or replace function public.handle_new_open_design_user()
 returns trigger
 language plpgsql

@@ -18,9 +18,12 @@ Supabase is the hosted persistence boundary:
 - The daemon remains the policy enforcement point for agent execution and
   project access.
 
-The SQLite database file is not uploaded to Supabase. Its logical schema and
-data-access operations are migrated to Postgres. SQLite remains available as a
-local fallback until the hosted path is proven.
+The target architecture does not upload the SQLite database file: its logical
+schema and data-access operations are migrated to Postgres. During that
+migration, the hosted single-instance bridge may upload a consistent SQLite
+backup to a private Supabase Storage bucket so Render restarts do not erase the
+current metadata graph. The bridge is explicitly not a multi-replica database
+and remains a transitional compatibility path.
 
 ## Non-goals
 

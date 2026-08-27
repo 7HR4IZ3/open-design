@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 118314)
-Total output lines: 11973
-
 #!/usr/bin/env node
 // @ts-nocheck
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -5164,7 +5161,1865 @@ publish from a frozen run snapshot rather than the live installed copy.`);
 
 async function runPluginPublishRepo(rest) {
   const flags = parseFlags(rest, {
-    string: new Set(['host', 'own…18314 tokens truncated…              Revoke a public file link whose local publication record
+    string: new Set(['host', 'owner']),
+    boolean: new Set(['help', 'h', 'json', 'dry-run']),
+  });
+  if (rest.length === 0 || flags.help || flags.h) {
+    console.log(`Usage:
+  od plugin publish-repo <folder> [--host github.com] [--owner github-login-or-org] [--dry-run] [--json]
+
+Creates or updates the public GitHub repository named by the plugin manifest.
+If plugin.repo is missing or uses a placeholder owner, the CLI resolves the
+target from --owner, a trusted manifest owner, local gh auth status, then the
+GitHub API as a last resort. It never publishes to placeholder owners.`);
+    process.exit(rest.length === 0 ? 2 : 0);
+  }
+  const folder = rest.find((a) => !a.startsWith('-') && a !== flags.host && a !== flags.owner);
+  if (!folder) {
+    console.error('Usage: od plugin publish-repo <folder>');
+    process.exit(2);
+  }
+
+  const [{ resolve, join }, { readFile, writeFile, stat, mkdtemp, readdir, rm, mkdir, cp }, { pathToFileURL }, os] = await Promise.all([
+    import('node:path'),
+    import('node:fs/promises'),
+    import('node:url'),
+    import('node:os'),
+  ]);
+  const absFolder = resolve(process.cwd(), folder);
+  const manifestPath = resolve(absFolder, 'open-design.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const host = typeof flags.host === 'string' ? flags.host : 'github.com';
+  const target = await resolvePluginGithubTarget({ host, owner: flags.owner, manifest, purpose: 'publish-repo' });
+  const normalized = normalizeManifestRepoForOwner(manifest, target.owner);
+  if (normalized.changed && !flags['dry-run']) {
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    await pluginCliValidateFolder(absFolder);
+  }
+
+  const repo = parseGithubRepoUrl(normalized.repoUrl);
+  if (!repo) {
+    console.error(`[publish-repo] invalid plugin.repo after normalization: ${normalized.repoUrl}`);
+    process.exit(2);
+  }
+  const steps = [];
+  const run = async (label, command, args, opts = {}) => {
+    steps.push({ label, command: [command, ...args].join(' ') });
+    if (flags['dry-run']) return { ok: true, stdout: '', stderr: '' };
+    const result = await (command === 'gh'
+      ? execGhBuffered(args, { cwd: opts.cwd ?? absFolder, timeout: opts.timeout ?? 120_000 })
+      : execFileBuffered(command, args, { cwd: opts.cwd ?? absFolder, timeout: opts.timeout ?? 120_000 }));
+    steps[steps.length - 1].ok = result.ok;
+    steps[steps.length - 1].stdout = result.stdout;
+    steps[steps.length - 1].stderr = result.stderr;
+    if (!result.ok) {
+      emitPluginWorkflowResult(flags, {
+        ok: false,
+        action: 'publish-repo',
+        folder: absFolder,
+        repoUrl: normalized.repoUrl,
+        login: target.login,
+        owner: target.owner,
+        ownerSource: target.ownerSource,
+        apiRateLimited: target.apiRateLimited,
+        steps,
+        error: { label, stdout: result.stdout, stderr: result.stderr, code: result.code },
+      });
+      process.exit(1);
+    }
+    return result;
+  };
+
+  let exists = false;
+  const view = flags['dry-run']
+    ? { ok: false, stderr: 'dry-run' }
+    : await execGhBuffered(['repo', 'view', repo.fullName], { cwd: absFolder, timeout: 30_000 });
+  steps.push({ label: 'check repo', command: `gh repo view ${repo.fullName}`, ok: view.ok, stdout: view.stdout, stderr: view.stderr });
+  if (view.ok) {
+    exists = true;
+  } else if (!flags['dry-run'] && !isRepoNotFound(view)) {
+    emitPluginWorkflowResult(flags, {
+      ok: false,
+      action: 'publish-repo',
+      folder: absFolder,
+      repoUrl: normalized.repoUrl,
+      login: target.login,
+      owner: target.owner,
+      ownerSource: target.ownerSource,
+      apiRateLimited: target.apiRateLimited,
+      steps,
+      error: { label: 'check repo', stdout: view.stdout, stderr: view.stderr, code: view.code },
+    });
+    process.exit(1);
+  }
+
+  let workdir = absFolder;
+  let cleanupDir = null;
+  if (exists && !flags['dry-run']) {
+    cleanupDir = await mkdtemp(join(os.tmpdir(), 'od-plugin-publish-sync-'));
+    workdir = join(cleanupDir, repo.name);
+    await run('clone repo', 'gh', ['repo', 'clone', repo.fullName, workdir], { cwd: cleanupDir, timeout: 240_000 });
+    for (const entry of await readdir(workdir)) {
+      if (entry === '.git') continue;
+      await rm(join(workdir, entry), { recursive: true, force: true });
+    }
+    await mkdir(workdir, { recursive: true });
+    for (const entry of await readdir(absFolder)) {
+      if (entry === '.git') continue;
+      await cp(join(absFolder, entry), join(workdir, entry), { recursive: true, force: true });
+    }
+  } else if (!flags['dry-run']) {
+    let hasGit = false;
+    try { await stat(resolve(absFolder, '.git')); hasGit = true; } catch {}
+    if (!hasGit) await run('git init', 'git', ['init']);
+  }
+
+  await run('git add', 'git', ['add', '-A'], { cwd: workdir });
+  const status = flags['dry-run']
+    ? { stdout: 'dry-run' }
+    : await execFileBuffered('git', ['status', '--porcelain'], { cwd: workdir });
+  if (status.stdout.trim().length > 0 || !exists) {
+    const commitMessage = exists
+      ? `Update: ${manifest.name} v${manifest.version ?? '0.0.0'}`
+      : `Initial commit: ${manifest.name} v${manifest.version ?? '0.0.0'}`;
+    await run('git commit', 'git', ['commit', '-m', commitMessage], { cwd: workdir });
+  }
+  const tag = `v${manifest.version ?? '0.0.0'}`;
+  if (!flags['dry-run']) {
+    const localTag = await execFileBuffered('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`], { cwd: workdir });
+    if (!localTag.ok) await run('git tag', 'git', ['tag', tag], { cwd: workdir });
+  }
+
+  if (exists) {
+    await run('git push', 'git', ['push', 'origin', 'HEAD'], { cwd: workdir });
+  } else {
+    await run('gh repo create', 'gh', [
+      'repo', 'create', repo.fullName, '--public', '--source', '.', '--push',
+      '--description', String(manifest.description ?? ''),
+    ], { cwd: workdir });
+  }
+  await run('git push tags', 'git', ['push', '--tags'], { cwd: workdir });
+  const verify = flags['dry-run']
+    ? { ok: true, stdout: JSON.stringify({ nameWithOwner: repo.fullName, url: normalized.repoUrl }) }
+    : await run('verify repo', 'gh', ['repo', 'view', repo.fullName, '--json', 'url,nameWithOwner'], { cwd: workdir });
+  const parsedVerify = safeJson(verify.stdout);
+  if (cleanupDir && !flags['dry-run']) {
+    await rm(cleanupDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  emitPluginWorkflowResult(flags, {
+    ok: true,
+    action: 'publish-repo',
+    folder: absFolder,
+    login: target.login,
+    owner: target.owner,
+    ownerSource: target.ownerSource,
+    apiRateLimited: target.apiRateLimited,
+    repoUrl: parsedVerify?.url ?? normalized.repoUrl,
+    manifestRewritten: normalized.changed,
+    manifestPath: pathToFileURL(manifestPath).pathname,
+    steps,
+  });
+}
+
+async function runPluginOpenDesignPr(rest) {
+  const flags = parseFlags(rest, {
+    string: new Set(['host', 'owner']),
+    boolean: new Set(['help', 'h', 'json', 'dry-run']),
+  });
+  if (rest.length === 0 || flags.help || flags.h) {
+    console.log(`Usage:
+  od plugin open-design-pr <folder> [--host github.com] [--owner github-login-or-fork-owner] [--dry-run] [--json]
+
+Copies a local plugin folder into plugins/community/<name>/ on the author's
+fork of nexu-io/open-design, pushes a branch, and opens the PR form with --web.`);
+    process.exit(rest.length === 0 ? 2 : 0);
+  }
+  const folder = rest.find((a) => !a.startsWith('-') && a !== flags.host && a !== flags.owner);
+  if (!folder) {
+    console.error('Usage: od plugin open-design-pr <folder>');
+    process.exit(2);
+  }
+  const [{ resolve, join }, fsp, os] = await Promise.all([
+    import('node:path'),
+    import('node:fs/promises'),
+    import('node:os'),
+  ]);
+  const absFolder = resolve(process.cwd(), folder);
+  const manifestPath = resolve(absFolder, 'open-design.json');
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+  const host = typeof flags.host === 'string' ? flags.host : 'github.com';
+  const target = await resolvePluginGithubTarget({ host, owner: flags.owner, manifest, purpose: 'open-design-pr' });
+  const name = String(manifest.name ?? '').trim();
+  if (!name) {
+    console.error('[open-design-pr] manifest.name is required');
+    process.exit(2);
+  }
+  const title = String(manifest.title ?? name).trim();
+  const branch = `plugin/${name}-${Math.floor(Date.now() / 1000)}`;
+  const tmpRoot = await fsp.mkdtemp(join(os.tmpdir(), 'od-open-design-pr-'));
+  const checkout = join(tmpRoot, 'open-design');
+  const steps = [];
+  const run = async (label, command, args, opts = {}) => {
+    steps.push({ label, command: [command, ...args].join(' ') });
+    if (flags['dry-run']) return { ok: true, stdout: '', stderr: '' };
+    const result = await (command === 'gh'
+      ? execGhBuffered(args, { cwd: opts.cwd ?? process.cwd(), timeout: opts.timeout ?? 180_000 })
+      : execFileBuffered(command, args, { cwd: opts.cwd ?? process.cwd(), timeout: opts.timeout ?? 180_000 }));
+    steps[steps.length - 1].ok = result.ok;
+    steps[steps.length - 1].stdout = result.stdout;
+    steps[steps.length - 1].stderr = result.stderr;
+    if (!result.ok && !opts.tolerate?.(result)) {
+      emitPluginWorkflowResult(flags, {
+        ok: false,
+        action: 'open-design-pr',
+        folder: absFolder,
+        login: target.login,
+        owner: target.owner,
+        ownerSource: target.ownerSource,
+        apiRateLimited: target.apiRateLimited,
+        branch,
+        steps,
+        error: { label, stdout: result.stdout, stderr: result.stderr, code: result.code },
+      });
+      process.exit(1);
+    }
+    return result;
+  };
+
+  await run('fork', 'gh', ['repo', 'fork', 'nexu-io/open-design'], {
+    tolerate: (r) => /already exists|existing fork/i.test(`${r.stdout}\n${r.stderr}`),
+  });
+  await run('clone fork', 'git', [
+    'clone',
+    '--depth', '1',
+    '--single-branch',
+    '--branch', 'main',
+    '--filter=blob:none',
+    '--sparse',
+    `https://github.com/${target.owner}/open-design.git`,
+    checkout,
+  ], { timeout: 240_000 });
+  await run('sparse checkout', 'git', ['sparse-checkout', 'set', 'plugins/community'], { cwd: checkout });
+  await run('checkout branch', 'git', ['checkout', '-b', branch], { cwd: checkout });
+  const dest = join(checkout, 'plugins', 'community', name);
+  if (!flags['dry-run']) {
+    await fsp.rm(dest, { recursive: true, force: true });
+    await fsp.mkdir(dest, { recursive: true });
+    await fsp.cp(absFolder, dest, { recursive: true, force: true, filter: (src) => !src.includes(`${absFolder}/.git`) });
+  }
+  await run('git add', 'git', ['add', `plugins/community/${name}`], { cwd: checkout });
+  await run('git commit', 'git', ['commit', '-m', `Add ${title} plugin`], { cwd: checkout });
+  await run('git push branch', 'git', ['push', '-u', 'origin', branch], { cwd: checkout });
+  const body = [
+    `Add ${title} (${name}) plugin.`,
+    '',
+    `Version: ${manifest.version ?? '0.0.0'}`,
+    manifest.description ? `Description: ${manifest.description}` : '',
+  ].filter(Boolean).join('\n');
+  const pr = await run('open PR form', 'gh', [
+    'pr', 'create',
+    '--repo', 'nexu-io/open-design',
+    '--head', `${target.owner}:${branch}`,
+    '--base', 'main',
+    '--title', `Add ${title} plugin`,
+    '--body', body,
+    '--web',
+  ], { cwd: checkout });
+  const prUrl = extractFirstUrl(pr.stdout || pr.stderr) ?? `https://github.com/${target.owner}/open-design/pull/new/${branch}`;
+  emitPluginWorkflowResult(flags, {
+    ok: true,
+    action: 'open-design-pr',
+    folder: absFolder,
+    login: target.login,
+    owner: target.owner,
+    ownerSource: target.ownerSource,
+    apiRateLimited: target.apiRateLimited,
+    branch,
+    prUrl,
+    checkout,
+    steps,
+  });
+}
+
+async function publishToMarketplaceJson({ catalogPath, meta }) {
+  const [{ dirname, resolve }, { mkdir, readFile, writeFile }, { PublishError, upsertMarketplaceJsonEntry }] = await Promise.all([
+    import('node:path'),
+    import('node:fs/promises'),
+    import('./plugins/publish.js'),
+  ]);
+  const resolvedPath = resolve(process.cwd(), catalogPath);
+  let existing = null;
+  try {
+    existing = JSON.parse(await readFile(resolvedPath, 'utf8'));
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+  let outcome;
+  try {
+    outcome = upsertMarketplaceJsonEntry({ manifest: existing, meta });
+  } catch (err) {
+    if (err instanceof PublishError) {
+      console.error(`[publish] ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+  await mkdir(dirname(resolvedPath), { recursive: true });
+  await writeFile(resolvedPath, `${JSON.stringify(outcome.manifest, null, 2)}\n`, 'utf8');
+  return {
+    catalogPath: resolvedPath,
+    inserted: outcome.inserted,
+    entry: outcome.entry,
+    manifest: {
+      name: outcome.manifest.name,
+      version: outcome.manifest.version,
+      plugins: outcome.manifest.plugins.length,
+    },
+  };
+}
+
+async function resolvePluginGithubTarget({ host = 'github.com', owner, manifest, purpose }) {
+  const version = await execGhBuffered(['--version'], { timeout: 10_000 });
+  if (!version.ok) {
+    console.error('[plugin github] GitHub CLI is required. Install gh from https://cli.github.com/ and retry.');
+    process.exit(1);
+  }
+  let status = await execGhBuffered(['auth', 'status', '--hostname', host, '--active'], { timeout: 10_000 });
+  if (!status.ok && /unknown flag: --active/i.test(`${status.stdout}\n${status.stderr}`)) {
+    status = await execGhBuffered(['auth', 'status', '--hostname', host], { timeout: 10_000 });
+  }
+  if (!status.ok) {
+    console.error(`[plugin github] gh is not authenticated for ${host}.`);
+    if (status.stderr || status.stdout) console.error(status.stderr || status.stdout);
+    console.error('Run: gh auth login -h github.com -s repo,workflow');
+    process.exit(1);
+  }
+  const manifestRepo = parseGithubRepoUrl(typeof manifest?.plugin?.repo === 'string' ? manifest.plugin.repo.trim() : '');
+  const trustedManifestOwner = purpose === 'publish-repo' && manifestRepo && !isPlaceholderRepoOwner(manifestRepo.owner) ? manifestRepo.owner : '';
+  const explicitOwner = typeof owner === 'string' ? owner.trim() : '';
+  if (explicitOwner && isPlaceholderRepoOwner(explicitOwner)) {
+    console.error(`[plugin github] refusing placeholder owner "${explicitOwner}". Pass a real GitHub login or org.`);
+    process.exit(2);
+  }
+  const statusLogin = parseGhAuthStatusLogin(status.stderr || status.stdout);
+  let login = statusLogin;
+  let resolvedOwner = explicitOwner || trustedManifestOwner || statusLogin;
+  let source = explicitOwner ? '--owner' : trustedManifestOwner ? 'plugin.repo' : statusLogin ? 'gh auth status' : '';
+  let apiError = null;
+  if (!resolvedOwner || !login) {
+    const user = await execGhBuffered(['api', 'user', '--hostname', host, '--jq', '.login'], { timeout: 20_000 });
+    if (user.ok && user.stdout.trim()) {
+      login = user.stdout.trim();
+      if (!resolvedOwner) {
+        resolvedOwner = login;
+        source = 'gh api user';
+      }
+    } else {
+      apiError = user;
+    }
+  }
+  if (!resolvedOwner) {
+    console.error(`[plugin github] could not resolve the GitHub owner for ${purpose}.`);
+    if (apiError?.stderr || apiError?.stdout) console.error(apiError.stderr || apiError.stdout);
+    if (apiError && isGhApiRateLimit(apiError)) {
+      const ownerHint = purpose === 'open-design-pr' ? '<github-login-or-fork-owner>' : '<github-login-or-org>';
+      console.error(`GitHub API is rate limited. Re-run with --owner ${ownerHint}, or authenticate/refresh gh and retry.`);
+    } else {
+      console.error('Run: gh auth refresh -h github.com -s repo,workflow');
+      console.error('Or:  gh auth login -h github.com -s repo,workflow');
+      console.error(purpose === 'open-design-pr'
+        ? 'If the fork owner differs from your auth login, pass --owner <github-login-or-fork-owner>.'
+        : 'If this is an org-owned plugin, pass --owner <github-org>.');
+    }
+    process.exit(1);
+  }
+  if (apiError && isGhApiRateLimit(apiError)) {
+    console.warn('[plugin github] GitHub API is rate limited; continuing with the owner resolved locally.');
+  }
+  if (isPlaceholderRepoOwner(resolvedOwner)) {
+    console.error(`[plugin github] refusing placeholder owner "${resolvedOwner}". Pass --owner <github-login-or-org>.`);
+    process.exit(2);
+  }
+  return {
+    host,
+    login: login || resolvedOwner,
+    owner: resolvedOwner,
+    ownerSource: source,
+    apiRateLimited: Boolean(apiError && isGhApiRateLimit(apiError)),
+    version: version.stdout,
+    status: status.stderr || status.stdout,
+  };
+}
+
+function parseGhAuthStatusLogin(output) {
+  const text = String(output ?? '');
+  const activeAccount = /Logged in to [^\s]+ account ([^\s()]+)/i.exec(text);
+  if (activeAccount?.[1]) return activeAccount[1].trim();
+  const tokenAccount = /Token account:\s*([^\s()]+)/i.exec(text);
+  if (tokenAccount?.[1]) return tokenAccount[1].trim();
+  return '';
+}
+
+function isGhApiRateLimit(result) {
+  const text = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`;
+  return /rate limit exceeded|authenticated requests get a higher rate limit/i.test(text);
+}
+
+function normalizeManifestRepoForOwner(manifest, owner) {
+  const name = String(manifest?.name ?? '').trim();
+  if (!name) {
+    console.error('[plugin repo] manifest.name is required');
+    process.exit(2);
+  }
+  const rawRepo = typeof manifest?.plugin?.repo === 'string' ? manifest.plugin.repo.trim() : '';
+  const parsed = parseGithubRepoUrl(rawRepo);
+  const placeholder = parsed ? isPlaceholderRepoOwner(parsed.owner) : false;
+  const shouldRewrite = !parsed || placeholder || parsed.name.toLowerCase() !== name.toLowerCase() || parsed.owner.toLowerCase() !== owner.toLowerCase();
+  const repoUrl = shouldRewrite ? `https://github.com/${owner}/${name}` : parsed.url;
+  if (shouldRewrite) {
+    if (!manifest.plugin || typeof manifest.plugin !== 'object') manifest.plugin = {};
+    manifest.plugin.repo = repoUrl;
+    manifest.homepage = repoUrl;
+    if (!manifest.author || typeof manifest.author !== 'object') manifest.author = {};
+    manifest.author.url = `https://github.com/${owner}`;
+  }
+  return {
+    changed: shouldRewrite,
+    repoUrl,
+    previousRepoUrl: rawRepo || null,
+  };
+}
+
+function parseGithubRepoUrl(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim().replace(/\.git$/i, '');
+  let owner = '';
+  let name = '';
+  try {
+    const url = new URL(trimmed);
+    if (!/^github\.com$/i.test(url.hostname)) return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    owner = parts[0] ?? '';
+    name = parts[1] ?? '';
+  } catch {
+    const match = /^([^/\s]+)\/([^/\s]+)$/.exec(trimmed);
+    if (!match) return null;
+    owner = match[1];
+    name = match[2];
+  }
+  if (!owner || !name) return null;
+  return {
+    owner,
+    name,
+    fullName: `${owner}/${name}`,
+    url: `https://github.com/${owner}/${name}`,
+  };
+}
+
+function isPlaceholderRepoOwner(owner) {
+  return /^(open-design-user|<vendor>|vendor|example-user|your-org|your-username|owner|user|username)$/i.test(String(owner ?? '').trim());
+}
+
+function isRepoNotFound(result) {
+  const text = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`;
+  return /could not resolve to a repository|not found|repository not found/i.test(text);
+}
+
+async function pluginCliValidateFolder(folder) {
+  const result = await execFileBuffered(process.execPath, [process.argv[1], 'plugin', 'validate', folder], {
+    timeout: 120_000,
+  });
+  if (!result.ok) {
+    console.error('[plugin validate] failed after manifest normalization');
+    if (result.stdout) console.error(result.stdout);
+    if (result.stderr) console.error(result.stderr);
+    process.exit(1);
+  }
+  return result;
+}
+
+function emitPluginWorkflowResult(flags, payload) {
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+    return;
+  }
+  if (!payload.ok) {
+    console.error(`[${payload.action}] failed${payload.error?.label ? ` at ${payload.error.label}` : ''}`);
+    if (payload.error?.stderr) console.error(payload.error.stderr);
+    if (payload.error?.stdout) console.error(payload.error.stdout);
+    return;
+  }
+  if (payload.action === 'publish-repo') {
+    console.log(`Plugin published: ${payload.repoUrl}`);
+    if (payload.ownerSource) console.log(`[publish-repo] owner resolved from ${payload.ownerSource}: ${payload.owner}`);
+    if (payload.apiRateLimited) console.log('[publish-repo] GitHub API was rate limited; continued with the locally resolved owner.');
+    if (payload.manifestRewritten) console.log('[publish-repo] manifest repo fields were normalized before publishing.');
+    return;
+  }
+  if (payload.action === 'open-design-pr') {
+    if (payload.ownerSource) console.log(`[open-design-pr] owner resolved from ${payload.ownerSource}: ${payload.owner}`);
+    if (payload.apiRateLimited) console.log('[open-design-pr] GitHub API was rate limited; continued with the locally resolved owner.');
+    console.log(`Open this URL and click Create to file the PR: ${payload.prUrl}`);
+    return;
+  }
+  console.log(JSON.stringify(payload, null, 2));
+}
+
+function safeJson(raw) {
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function extractFirstUrl(text) {
+  const match = /https?:\/\/\S+/i.exec(String(text ?? ''));
+  return match ? match[0].replace(/[)\].,]+$/, '') : null;
+}
+
+async function runPluginYank(rest) {
+  const flags = parseFlags(rest, {
+    string: new Set(['daemon-url', 'reason', 'to']),
+    boolean: new Set(['help', 'h', 'json', 'open']),
+  });
+  if (rest.length === 0 || flags.help || flags.h) {
+    console.log(`Usage:
+  od plugin yank <vendor/plugin-name>@<version> --reason "<why>" [--to open-design] [--json]
+
+Yanking never deletes metadata or bytes. It opens the registry review flow that
+marks a version unresolvable for new installs while preserving lockfile replay.`);
+    process.exit(rest.length === 0 ? 2 : 0);
+  }
+  const spec = rest.find((a) => !a.startsWith('-') && a !== flags.reason && a !== flags.to);
+  const reason = typeof flags.reason === 'string' ? flags.reason.trim() : '';
+  const parsed = parseCliPluginSpecifier(spec);
+  if (!parsed.name || !parsed.range) {
+    console.error('Usage: od plugin yank <vendor/plugin-name>@<version> --reason "<why>"');
+    process.exit(2);
+  }
+  if (!reason) {
+    console.error('--reason is required for yanking');
+    process.exit(2);
+  }
+  const target = flags.to ?? 'open-design';
+  if (target !== 'open-design') {
+    console.error('Only --to open-design is supported in this v1 GitHub-backed yank flow.');
+    process.exit(2);
+  }
+  const title = `Yank ${parsed.name}@${parsed.range}`;
+  const body = [
+    `## Yank ${parsed.name}@${parsed.range}`,
+    '',
+    `Reason: ${reason}`,
+    '',
+    'Expected registry patch:',
+    '',
+    '```json',
+    JSON.stringify({
+      name: parsed.name,
+      version: parsed.range,
+      yanked: true,
+      yankReason: reason,
+    }, null, 2),
+    '```',
+    '',
+    'Generated by `od plugin yank`.',
+  ].join('\n');
+  const params = new URLSearchParams({ title, body });
+  const payload = {
+    catalog: 'open-design',
+    name: parsed.name,
+    version: parsed.range,
+    reason,
+    url: `https://github.com/nexu-io/open-design/issues/new?${params.toString()}`,
+    body,
+  };
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+  } else {
+    console.log(`[yank] ${payload.url}`);
+    console.log('---');
+    console.log(body);
+  }
+  if (flags.open) {
+    const opener = process.platform === 'darwin' ? 'open'
+      : process.platform === 'win32' ? 'start'
+      : 'xdg-open';
+    const { spawn } = await import('node:child_process');
+    spawn(opener, [payload.url], { detached: true, stdio: 'ignore' }).unref();
+  }
+}
+
+async function runPluginDoctor(rest) {
+  // Plan §3.HH1 — --strict promotes warnings to errors so CI can
+  // opt into 'no warnings allowed' mode without parsing the issue
+  // list manually.
+  const flags = parseFlags(rest, {
+    string:  PLUGIN_STRING_FLAGS,
+    boolean: new Set([...PLUGIN_BOOLEAN_FLAGS, 'strict']),
+  });
+  const id = rest.find((a) => !a.startsWith('-') && a !== flags['daemon-url'] && a !== flags.source);
+  if (!id) {
+    console.error('Usage: od plugin doctor <id> [--strict] [--json]');
+    process.exit(2);
+  }
+  const url = `${(await pluginDaemonUrl(flags)).replace(/\/$/, '')}/api/plugins/${encodeURIComponent(id)}/doctor`;
+  const resp = await pluginFetch(flags, url, { method: 'POST' });
+  if (!resp.ok) {
+    console.error(`POST /api/plugins/${id}/doctor failed: ${resp.status} ${await resp.text()}`);
+    process.exit(1);
+  }
+  const data = await resp.json();
+  const issues = Array.isArray(data?.issues) ? data.issues : [];
+  const warnings = issues.filter((i) => i?.severity === 'warning');
+  const strict = flags.strict === true;
+  // Strict mode: a clean issue list is still required, but the
+  // pass/fail bit also fails on any warning.
+  const passed = data.ok && (!strict || warnings.length === 0);
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ...data, strict, passed }, null, 2) + '\n');
+  } else {
+    if (passed && issues.length === 0) {
+      console.log(`[doctor] ${data.pluginId} ok (digest ${data.freshDigest.slice(0, 12)}…)`);
+    } else {
+      const tier = !data.ok ? 'errors' : (strict && warnings.length > 0) ? 'warnings (--strict)' : 'warnings';
+      console.log(`[doctor] ${data.pluginId} ${tier}:`);
+      for (const issue of issues) {
+        console.log(`  [${issue.severity}] ${issue.code}: ${issue.message}`);
+      }
+    }
+  }
+  process.exit(passed ? 0 : (data.ok ? 4 : 1));
+}
+
+function safeParseJson(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+// `od plugin replay <runId> --snapshot-id <id>` — re-emit the immutable
+// snapshot the original run was launched against, so the caller (or
+// another agent) can re-apply the same plugin against fresh state. Phase
+// 2A keeps replay headless: the CLI prints the snapshot + rerun bundle;
+// the agent restarts the run via `od plugin apply` followed by a normal
+// `od run start`. Future Phase 2C `od plugin run` will collapse this
+// into a one-shot wrapper.
+async function runPluginReplay(rest) {
+  const flags = parseFlags(rest, { string: PLUGIN_STRING_FLAGS, boolean: PLUGIN_BOOLEAN_FLAGS });
+  const runId = rest.find((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.source
+    && a !== flags.inputs
+    && a !== flags.project
+    && a !== flags['snapshot-id']
+    && a !== flags.capabilities);
+  if (!runId) {
+    console.error('Usage: od plugin replay <runId> --snapshot-id <id>');
+    process.exit(2);
+  }
+  const snapshotId = flags['snapshot-id'];
+  if (!snapshotId) {
+    console.error('--snapshot-id is required (runs are in-memory in Phase 2A; pass the snapshot id returned by od plugin apply)');
+    process.exit(2);
+  }
+  const url = `${(await pluginDaemonUrl(flags)).replace(/\/$/, '')}/api/runs/${encodeURIComponent(runId)}/replay`;
+  const resp = await pluginFetch(flags, url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ snapshotId }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    console.error(`POST /api/runs/${runId}/replay failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  console.log(`[replay] ${data.rerun?.pluginId}@${data.rerun?.pluginVersion} digest=${(data.rerun?.manifestSourceDigest ?? '').slice(0, 12)}…`);
+  console.log(`[replay] inputs: ${JSON.stringify(data.rerun?.inputs ?? {})}`);
+  console.log('[replay] re-apply via: od plugin apply ' + data.rerun?.pluginId + ' --inputs ' + JSON.stringify(JSON.stringify(data.rerun?.inputs ?? {})));
+}
+
+// `od plugin trust <id> --capabilities <comma-sep>` — flip a plugin's
+// capabilities_granted set. Plan §3.A2 / spec §9.1: the CLI is the
+// canonical write surface (invariant I4). The daemon validates the
+// capability vocabulary; unknown / malformed entries surface as
+// exit-2 usage failures.
+async function runPluginTrust(rest) {
+  const flags = parseFlags(rest, { string: PLUGIN_STRING_FLAGS, boolean: PLUGIN_BOOLEAN_FLAGS });
+  const id = rest.find((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.source
+    && a !== flags.inputs
+    && a !== flags.project
+    && a !== flags['snapshot-id']
+    && a !== flags.capabilities);
+  if (!id) {
+    console.error('Usage: od plugin trust <id> --capabilities connector:figma,connector:notion [--revoke]');
+    process.exit(2);
+  }
+  const capsCsv = typeof flags.capabilities === 'string' ? flags.capabilities : '';
+  const caps = capsCsv.split(',').map((c) => c.trim()).filter(Boolean);
+  if (caps.length === 0) {
+    console.error('--capabilities is required (comma-separated, e.g. connector:figma,fs:read)');
+    process.exit(2);
+  }
+  const action = flags.revoke ? 'revoke' : 'grant';
+  const url = `${(await pluginDaemonUrl(flags)).replace(/\/$/, '')}/api/plugins/${encodeURIComponent(id)}/trust`;
+  const resp = await pluginFetch(flags, url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ capabilities: caps, action }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    if (resp.status === 400 && data?.error?.code === 'invalid-capability') {
+      const rej = (data.error.data?.rejected ?? [])
+        .map((r) => `${r.capability} (${r.reason})`)
+        .join(', ');
+      console.error(`[trust] invalid capabilities: ${rej}`);
+      process.exit(2);
+    }
+    console.error(`POST ${url} failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  console.log(`[trust] ${action === 'grant' ? 'granted' : 'revoked'} on ${id}: ${caps.join(', ')}`);
+  console.log(`[trust] now: ${(data.capabilitiesGranted ?? []).join(', ')}`);
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od ui …  (spec §10.3.4 headless GenUI surface inbox)
+// ---------------------------------------------------------------------------
+
+async function runUi(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    printUiHelp();
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case 'list':    return runUiList(rest);
+    case 'show':    return runUiShow(rest);
+    case 'respond': return runUiRespond(rest);
+    case 'revoke':  return runUiRevoke(rest);
+    case 'prefill': return runUiPrefill(rest);
+    default:
+      console.error(`unknown subcommand: od ui ${sub}`);
+      printUiHelp();
+      process.exit(2);
+  }
+}
+
+async function uiDaemonUrl(flags) {
+  return cliDaemonUrl(flags);
+}
+
+function uiRequestHeaders(flags, json = false) {
+  return {
+    ...(json ? { 'content-type': 'application/json' } : {}),
+    ...(workspaceHeadersFromExplicitFlags(flags) ?? {}),
+  };
+}
+
+async function runUiList(rest) {
+  const flags = parseFlags(rest, { string: UI_STRING_FLAGS, boolean: UI_BOOLEAN_FLAGS });
+  const base = (await uiDaemonUrl(flags)).replace(/\/$/, '');
+  let url;
+  if (flags.run) url = `${base}/api/runs/${encodeURIComponent(flags.run)}/genui`;
+  else if (flags.project) url = `${base}/api/projects/${encodeURIComponent(flags.project)}/genui`;
+  else {
+    console.error('Usage: od ui list --run <runId> | --project <projectId>');
+    process.exit(2);
+  }
+  const resp = await fetch(url, { headers: uiRequestHeaders(flags) });
+  if (!resp.ok) {
+    console.error(`GET ${url} failed: ${resp.status} ${await resp.text()}`);
+    process.exit(1);
+  }
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  const surfaces = Array.isArray(data?.surfaces) ? data.surfaces : [];
+  if (surfaces.length === 0) {
+    console.log('No GenUI surfaces.');
+    return;
+  }
+  for (const s of surfaces) {
+    console.log(`${s.surfaceId}  kind=${s.kind}  persist=${s.persist}  status=${s.status}  rowId=${s.id}`);
+  }
+}
+
+async function runUiShow(rest) {
+  const flags = parseFlags(rest, { string: UI_STRING_FLAGS, boolean: UI_BOOLEAN_FLAGS });
+  const positional = rest.filter((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.run
+    && a !== flags.project
+    && a !== flags.workspace
+    && a !== flags['workspace-member']
+    && a !== flags.value
+    && a !== flags['value-json']
+    && a !== flags.plugin
+    && a !== flags['snapshot-id']
+    && a !== flags.persist
+    && a !== flags.kind);
+  const runId = flags.run ?? positional[0];
+  const surfaceId = flags['snapshot-id'] ? null : positional[flags.run ? 0 : 1];
+  if (!runId || !surfaceId) {
+    console.error('Usage: od ui show --run <runId> <surfaceId>');
+    process.exit(2);
+  }
+  const url = `${(await uiDaemonUrl(flags)).replace(/\/$/, '')}/api/runs/${encodeURIComponent(runId)}/genui/${encodeURIComponent(surfaceId)}`;
+  const resp = await fetch(url, { headers: uiRequestHeaders(flags) });
+  if (!resp.ok) {
+    console.error(`GET ${url} failed: ${resp.status} ${await resp.text()}`);
+    process.exit(1);
+  }
+  const data = await resp.json();
+  // Plan §6 Phase 2A.5 — `--schema` prints the spec's JSON Schema
+  // only (null if the surface declares none). Designed to feed
+  // `od ui respond --value-json "$(...)"` in headless / agent flows.
+  if (flags.schema) {
+    const schema = data?.spec?.schema ?? null;
+    process.stdout.write(JSON.stringify(schema, null, 2) + '\n');
+    return;
+  }
+  process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+}
+
+async function runUiRespond(rest) {
+  const flags = parseFlags(rest, { string: UI_STRING_FLAGS, boolean: UI_BOOLEAN_FLAGS });
+  const positional = rest.filter((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.run
+    && a !== flags.project
+    && a !== flags.workspace
+    && a !== flags['workspace-member']
+    && a !== flags.value
+    && a !== flags['value-json']
+    && a !== flags.plugin
+    && a !== flags['snapshot-id']
+    && a !== flags.persist
+    && a !== flags.kind);
+  const runId = flags.run ?? positional[0];
+  const surfaceId = positional[flags.run ? 0 : 1];
+  if (!runId || !surfaceId) {
+    console.error('Usage: od ui respond --run <runId> <surfaceId> [--value <text> | --value-json <json> | --skip]');
+    process.exit(2);
+  }
+  let value = null;
+  if (flags.skip) {
+    // Skip translates to a null answer; daemon resolves the surface in
+    // `resolved` state with `respondedBy: 'auto'`. Phase 2A keeps the
+    // semantics simple; spec §10.3.4 onTimeout='skip' lands in Phase 4.
+    value = null;
+  } else if (typeof flags['value-json'] === 'string') {
+    try { value = JSON.parse(flags['value-json']); } catch (err) {
+      console.error(`--value-json must be valid JSON: ${err.message}`);
+      process.exit(2);
+    }
+  } else if (typeof flags.value === 'string') {
+    value = flags.value;
+  }
+  const url = `${(await uiDaemonUrl(flags)).replace(/\/$/, '')}/api/runs/${encodeURIComponent(runId)}/genui/${encodeURIComponent(surfaceId)}/respond`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: uiRequestHeaders(flags, true),
+    body: JSON.stringify({ value, respondedBy: 'user' }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    console.error(`POST ${url} failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  } else {
+    console.log(`[ui] ${surfaceId} resolved (rowId=${data?.surface?.id})`);
+  }
+}
+
+async function runUiRevoke(rest) {
+  const flags = parseFlags(rest, { string: UI_STRING_FLAGS, boolean: UI_BOOLEAN_FLAGS });
+  const positional = rest.filter((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.run
+    && a !== flags.project
+    && a !== flags.workspace
+    && a !== flags['workspace-member']
+    && a !== flags.value
+    && a !== flags['value-json']
+    && a !== flags.plugin
+    && a !== flags['snapshot-id']
+    && a !== flags.persist
+    && a !== flags.kind);
+  const projectId = flags.project ?? positional[0];
+  const surfaceId = positional[flags.project ? 0 : 1];
+  if (!projectId || !surfaceId) {
+    console.error('Usage: od ui revoke --project <projectId> <surfaceId>');
+    process.exit(2);
+  }
+  const url = `${(await uiDaemonUrl(flags)).replace(/\/$/, '')}/api/projects/${encodeURIComponent(projectId)}/genui/${encodeURIComponent(surfaceId)}/revoke`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: uiRequestHeaders(flags),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    console.error(`POST ${url} failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  } else {
+    console.log(`[ui] revoked ${data.invalidated} row(s)`);
+  }
+}
+
+async function runUiPrefill(rest) {
+  const flags = parseFlags(rest, { string: UI_STRING_FLAGS, boolean: UI_BOOLEAN_FLAGS });
+  const positional = rest.filter((a) => !a.startsWith('-')
+    && a !== flags['daemon-url']
+    && a !== flags.run
+    && a !== flags.project
+    && a !== flags.workspace
+    && a !== flags['workspace-member']
+    && a !== flags.value
+    && a !== flags['value-json']
+    && a !== flags.plugin
+    && a !== flags['snapshot-id']
+    && a !== flags.persist
+    && a !== flags.kind);
+  const projectId = flags.project ?? positional[0];
+  const surfaceId = positional[flags.project ? 0 : 1];
+  const snapshotId = flags['snapshot-id'];
+  if (!projectId || !surfaceId || !snapshotId) {
+    console.error('Usage: od ui prefill --project <projectId> --snapshot-id <id> <surfaceId> [--value <text> | --value-json <json>] [--persist run|conversation|project] [--kind form|choice|confirmation|oauth-prompt]');
+    process.exit(2);
+  }
+  let value = null;
+  if (typeof flags['value-json'] === 'string') {
+    try { value = JSON.parse(flags['value-json']); } catch (err) {
+      console.error(`--value-json must be valid JSON: ${err.message}`);
+      process.exit(2);
+    }
+  } else if (typeof flags.value === 'string') {
+    value = flags.value;
+  }
+  const url = `${(await uiDaemonUrl(flags)).replace(/\/$/, '')}/api/projects/${encodeURIComponent(projectId)}/genui/prefill`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: uiRequestHeaders(flags, true),
+    body: JSON.stringify({
+      snapshotId,
+      surfaceId,
+      kind:    flags.kind ?? 'confirmation',
+      persist: flags.persist ?? 'project',
+      value,
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    console.error(`POST ${url} failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  } else {
+    console.log(`[ui] prefilled ${surfaceId} (rowId=${data?.surface?.id})`);
+  }
+}
+
+function printUiHelp() {
+  console.log(`Usage:
+  od ui list  --run <runId>                          List GenUI surfaces for a run.
+  od ui list  --project <projectId>                  List GenUI surfaces for a project.
+  od ui show  --run <runId> <surfaceId> [--schema]   Read a single surface (kind / schema / value). --schema prints just the JSON Schema.
+  od ui respond --run <runId> <surfaceId> [--value <txt> | --value-json <json> | --skip]
+                                                     Answer a pending surface from any process.
+  od ui revoke --project <projectId> <surfaceId>     Invalidate a project-tier cached answer.
+  od ui prefill --project <projectId> --snapshot-id <id> <surfaceId>
+                [--value <text> | --value-json <json>] [--persist run|conversation|project]
+                                                     Pre-answer a surface so the run never broadcasts it.
+
+Common options:
+  --daemon-url <url>   OpenDesign daemon HTTP base (default OD_DAEMON_URL, OD_SIDECAR_IPC_PATH discovery, or http://127.0.0.1:7456).
+  --workspace <id>     Explicit Workspace id for a bound project or run.
+  --workspace-member <id>
+                       Explicit Workspace member id for a bound project or run.
+  --json               Emit raw JSON (suitable for scripts) instead of human-readable output.`);
+}
+
+function printPluginHelp() {
+  console.log(`Usage:
+  od plugin list [--task-kind <kind>]     List installed plugins (filterable).
+  od plugin search <query> [--tag <t>]    Search installed plugins by id/title/desc/tag.
+  od plugin stats [--json]                Inventory + snapshot health report.
+  od plugin info <id>                     Print a plugin's manifest + trust state as JSON.
+  od plugin manifest <id>                 Print only the parsed manifest JSON (no wrapper).
+  od plugin sources                       List distinct install sources + counts.
+  od plugin install --source <path>       Install a plugin from a local folder (Phase 1).
+  od plugin upgrade <id>                  Re-install a plugin from its recorded source.
+  od plugin uninstall <id>                Remove a plugin from the registry + on-disk staging.
+  od plugin apply <id> [--inputs <json>]  Compute an ApplyResult (preview) for a plugin.
+  od plugin duplicate <id> [--name <n>]   Copy a plugin HTML example into a new project
+                                          without starting an agent run.
+  od plugin doctor <id>                   Lint a plugin's manifest, atoms and resolved refs.
+  od plugin canon <snapshotId>            Print the canonical system-prompt block for a snapshot.
+                                          (--check <file> for byte-equality fixtures.)
+  od plugin simulate <pluginId> [-s k=v]  Walk the plugin's pipeline against caller-supplied
+                                          signals; report stage convergence + iterations
+                                          (no LLM in the loop).
+  od plugin verify <pluginId>             CI meta-command: doctor + simulate + canon --check
+                                          driven by an .od-verify.json config in the plugin folder.
+  od plugin events tail [-f] [--kind k]   Tail the in-memory plugin event ring buffer.
+  od plugin events snapshot               One-shot read (filterable, no SSE).
+  od plugin events stats                  Roll-up: counts by kind / pluginId / time range.
+  od plugin events purge                  Drop every event in the buffer (loopback-only).
+  od plugin diff <a> <b> [--json]         Compare two installed plugins by id.
+  od plugin replay <runId> --snapshot-id <id>
+                                          Re-emit the immutable snapshot a run launched against.
+  od plugin run <id> --project <id> [--workspace <id> --workspace-member <id>]
+                                          Apply a plugin and start a project run.
+  od plugin snapshots list --project <id> [--workspace <id> --workspace-member <id>]
+                                          List snapshots applied to a project.
+  od plugin trust <id> --capabilities a,b
+                                          Stage a capability grant (full mutation lands Phase 3).
+  od plugin validate <folder> [--json]    Lint a plugin folder before installing
+                                          (manifest parse + atom + ref checks).
+  od plugin pack <folder> [--out <path>]  Build a .tgz archive of a plugin
+                                          folder for distribution.
+  od plugin candidates list --project <id> [--workspace <id> --workspace-member <id>]
+                                          List persisted skill-to-plugin candidates.
+  od plugin publish-repo <folder>         Create/update the author's public
+                                          GitHub repo for a plugin folder.
+  od plugin open-design-pr <folder>       Push a community-catalog branch and
+                                          open the nexu-io/open-design PR form.
+  od plugin publish <folder> --to open-design|anthropics-skills|awesome-agent-skills|clawhub|skills-sh
+                                          Prepare a registry submission link.
+  od plugin login [--host github.com]      Authenticate registry publishing via gh.
+  od plugin whoami [--host github.com]     Show the gh account used for publishing.
+
+Common options:
+  --daemon-url <url>   OpenDesign daemon HTTP base (default OD_DAEMON_URL, OD_SIDECAR_IPC_PATH discovery, or http://127.0.0.1:7456).
+  --json               Emit raw JSON (suitable for scripts) instead of human-readable output.
+
+Installs support local folders, github:owner/repo refs, HTTPS .tgz archives,
+and bare marketplace names resolved through configured registry sources.`);
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od project / od run / od files / od conversation
+//
+// Plan §6 Phase 1 follow-up + Phase 2C: thin CLI wrappers over the
+// existing daemon HTTP endpoints (POST /api/projects, POST /api/runs,
+// GET /api/projects/:id/files, …). The §12.5 walkthrough relies on
+// these so a code agent can drive OpenDesign end-to-end without
+// hitting `/api/*` directly. Spec §11.7 invariant: every UI feature is
+// reachable via the CLI; we wrap rather than duplicate.
+// ---------------------------------------------------------------------------
+
+async function projectDaemonUrl(flags) {
+  return cliDaemonUrl(flags);
+}
+
+function printShareUsage() {
+  console.log(`Usage:
+  od share open-design [--locale <locale>] [--platform <id>] [--json]
+  od share url --url <https-url> [--title <title>] [--text <text>]
+               [--copy-text <text>] [--locale <locale>] [--platform <id>] [--json]
+
+Platforms:
+  x, linkedin, facebook, reddit, telegram, whatsapp, weibo, line, instagram, xiaohongshu
+
+Common options:
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --json               Emit raw JSON.`);
+}
+
+async function runShare(args) {
+  const wantsHelp = args.length === 0
+    || args[0] === 'help'
+    || args.includes('--help')
+    || args.includes('-h');
+  if (wantsHelp) {
+    printShareUsage();
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+
+  const sub = args[0] && !args[0].startsWith('-') ? args[0] : 'open-design';
+  const rest = sub === args[0] ? args.slice(1) : args;
+  const flags = parseFlags(rest, {
+    string: SHARE_STRING_FLAGS,
+    boolean: SHARE_BOOLEAN_FLAGS,
+  });
+  const base = (await cliDaemonUrl(flags)).replace(/\/$/, '');
+  const positional = positionalArgs(rest, SHARE_STRING_FLAGS);
+  const url = flags.url ?? positional[0];
+  const body = sub === 'url'
+    ? {
+        kind: 'project-html',
+        url,
+        title: flags.title,
+        text: flags.text,
+        copyText: flags['copy-text'],
+        locale: flags.locale,
+      }
+    : {
+        kind: 'open-design-repo',
+        title: flags.title,
+        text: flags.text,
+        copyText: flags['copy-text'],
+        locale: flags.locale,
+      };
+
+  if (sub !== 'open-design' && sub !== 'url') {
+    console.error(`unknown share target: ${sub}`);
+    printShareUsage();
+    process.exit(2);
+  }
+  if (body.kind === 'project-html' && !body.url) {
+    console.error('Usage: od share url --url <https-url>');
+    process.exit(2);
+  }
+
+  const resp = await fetch(`${base}/api/social-share`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.platform) {
+    const target = (data.platforms ?? []).find((item) => item.platform === flags.platform);
+    if (!target) {
+      console.error(`unknown platform: ${flags.platform}`);
+      process.exit(2);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(target, null, 2) + '\n');
+    if (target.shareUrl) {
+      console.log(target.shareUrl);
+      return;
+    }
+    console.log(data.copyText);
+    if (target.entryUrl) console.log(target.entryUrl);
+    return;
+  }
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  console.log(data.copyText);
+  for (const target of data.platforms ?? []) {
+    console.log(`${target.platform}\t${target.shareUrl ?? target.entryUrl ?? '-'}`);
+  }
+}
+
+function printFigmaUsage() {
+  console.log(`Usage:
+  od figma import --project <id> --file <path.fig> [--notes "<text>"]
+                  [--build] [--prompt "<text>" | --prompt-file <path|->] [--json]
+  od figma import --project <id> --figma-url <url> [--notes "<text>"] [--json]
+
+Imports a Figma design into a project. A .fig file is decoded fully offline
+(no Figma account); a Figma URL runs through the od-figma-migration scenario
+(OAuth). Either way it stages a figma/ snapshot the agent reshapes into a
+webpage.
+
+Flags:
+  --project <id>       Target project id (required).
+  --file <path.fig>    Local .fig to decode offline.
+  --figma-url <url>    Figma file URL (https://figma.com/(file|design)/<key>).
+  --notes "<text>"     Design brief folded into the reshape prompt.
+  --build              After import, start a run that builds the webpage.
+  --prompt / --prompt-file   Override the build prompt (file or - for stdin).
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --workspace <id>     Explicit Workspace id for the bound project.
+  --workspace-member <id>
+                       Explicit Workspace member id for the bound project.
+  --json               Emit raw JSON.`);
+}
+
+async function runFigma(args) {
+  const sub = args.find((a) => !a.startsWith('-'));
+  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
+    printFigmaUsage();
+    process.exit(sub ? 0 : 2);
+  }
+  if (sub !== 'import') {
+    console.error(`unknown subcommand: od figma ${sub}`);
+    printFigmaUsage();
+    process.exit(2);
+  }
+  const idx = args.indexOf(sub);
+  const rest = [...args.slice(0, idx), ...args.slice(idx + 1)];
+  const flags = parseFlags(rest, {
+    string: FIGMA_PROJECT_RESOURCE_STRING_FLAGS,
+    boolean: FIGMA_BOOLEAN_FLAGS,
+  });
+  const base = (await cliDaemonUrl(flags)).replace(/\/$/, '');
+  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+
+  if (!flags.project) {
+    console.error('--project <id> is required');
+    process.exit(2);
+  }
+  const file = flags.file;
+  const figmaUrl = flags['figma-url'];
+  if (!file && !figmaUrl) {
+    console.error('one of --file <path.fig> or --figma-url <url> is required');
+    process.exit(2);
+  }
+
+  // Figma URL → the existing migration scenario (OAuth lives in the run
+  // pipeline). Start it through the same /api/runs path `od run start` uses.
+  if (figmaUrl && !file) {
+    const runBody = {
+      projectId: flags.project,
+      pluginId: 'od-figma-migration',
+      pluginInputs: { figmaUrl, ...(flags.notes ? { notes: flags.notes } : {}) },
+    };
+    const runResp = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...workspaceHeaders },
+      body: JSON.stringify(runBody),
+    });
+    const runData = await runResp.json().catch(() => ({}));
+    if (!runResp.ok) {
+      console.error(`POST /api/runs failed: ${runResp.status} ${JSON.stringify(runData)}`);
+      process.exit(1);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(runData, null, 2) + '\n');
+    console.log(`[figma] migration run started ${runData.runId}`);
+    return;
+  }
+
+  // Offline .fig path → multipart upload to the import endpoint.
+  let bytes;
+  try {
+    bytes = readFileSync(file);
+  } catch (err) {
+    console.error(`cannot read ${file}: ${err.message}`);
+    process.exit(2);
+  }
+  const form = new FormData();
+  form.append('file', new Blob([bytes]), basename(file));
+  if (flags.notes) form.append('notes', String(flags.notes));
+  const resp = await fetch(`${base}/api/projects/${encodeURIComponent(flags.project)}/figma/import`, {
+    method: 'POST',
+    headers: workspaceHeaders,
+    body: form,
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+
+  if (flags.json && !flags.build) {
+    return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  }
+  const inv = data.inventory ?? {};
+  if (!flags.json) {
+    console.log(`[figma] imported "${data.label}" → ${data.snapshotDir}/`);
+    console.log(`  ${inv.decoded ? 'decoded' : 'assets-only'}: ${inv.nodeCount} nodes, ${inv.pageCount} pages, ${inv.frameCount} frames, ${inv.componentCount} components`);
+    console.log(`  ${(inv.colors ?? []).length} colors, ${(inv.fonts ?? []).length} fonts, ${inv.assetCount} assets${inv.hasThumbnail ? ', + preview' : ''}`);
+    for (const w of inv.warnings ?? []) console.log(`  ! ${w}`);
+  }
+
+  if (flags.build) {
+    const override = await readPromptFromFlags(flags);
+    const message = override || data.suggestedPrompt;
+    const runResp = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...workspaceHeaders },
+      body: JSON.stringify({ projectId: flags.project, message }),
+    });
+    const runData = await runResp.json().catch(() => ({}));
+    if (!runResp.ok) {
+      console.error(`build run failed: ${runResp.status} ${JSON.stringify(runData)}`);
+      process.exit(1);
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify({ ...data, build: runData }, null, 2) + '\n');
+    console.log(`[figma] build run started ${runData.runId}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od brand …
+//
+// Headless surface for the Brands library. This is the dual-track contract:
+// every capability the Brands UI exposes (extract from a URL, list, inspect,
+// delete) is reachable here so an external agent (hermes-agent, openclaw,
+// scripted job) can drive the brand lifecycle without rendering a page.
+// Storage is /api/brands on the local daemon; a "brand" registers a `user:<id>`
+// design system under the hood, so applying a brand reuses the existing
+// design-system apply flow — there is no separate brandId apply path.
+// ---------------------------------------------------------------------------
+
+// Derive a short domain for list output from a brand's source URL.
+function brandDomainForCli(sourceUrl) {
+  if (typeof sourceUrl !== 'string' || sourceUrl.trim().length === 0) return '-';
+  try {
+    const u = new URL(/^[a-z]+:\/\//i.test(sourceUrl) ? sourceUrl : `https://${sourceUrl}`);
+    return u.hostname.replace(/^www\./, '') || '-';
+  } catch {
+    return sourceUrl;
+  }
+}
+
+function formatBrandRow(summary) {
+  const meta = summary?.meta ?? {};
+  const name = summary?.brand?.name || meta.id || '-';
+  return [
+    meta.id ?? '-',
+    name,
+    brandDomainForCli(meta.sourceUrl),
+    meta.status ?? '-',
+  ].join('\t');
+}
+
+async function runBrand(args) {
+  if (args.length === 0 || isBrandHelpArg(args[0])
+      || args.includes('--help') || args.includes('-h')) {
+    console.log(BRAND_USAGE);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  switch (sub) {
+    case 'list':     return runBrandList(rest);
+    case 'create':   return runBrandCreate(rest);
+    case 'extract':  return runBrandCreate(rest);
+    case 'continue': return runBrandContinue(rest);
+    case 'preview':  return runBrandPreview(rest);
+    case 'finalize': return runBrandFinalize(rest);
+    case 'extract-from-html': return runBrandExtractFromHtml(rest);
+    case 'get':      return runBrandGet(rest);
+    case 'show':     return runBrandGet(rest);
+    case 'delete':   return runBrandDelete(rest);
+    case 'remove':   return runBrandDelete(rest);
+    default:
+      console.error(`unknown subcommand: od brand ${sub}`);
+      console.log(BRAND_USAGE);
+      process.exit(2);
+  }
+}
+
+async function runBrandList(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands`);
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  const brands = Array.isArray(data?.brands) ? data.brands : [];
+  if (brands.length === 0) {
+    console.log('No brands yet. Extract one with: od brand create <url>');
+    return;
+  }
+  console.log('# id\tname\tdomain\tstatus');
+  for (const summary of brands) console.log(formatBrandRow(summary));
+}
+
+async function runBrandCreate(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const positional = positionalArgs(rest, BRAND_STRING_FLAGS);
+  // The URL may arrive as a positional, or — for parity with other long-input
+  // subcommands — via --prompt-file <path|-> (a file or stdin). The positional
+  // wins when both are present.
+  let url = positional[0];
+  if (!url) {
+    const fromFile = await readPromptFromFlags(flags);
+    if (typeof fromFile === 'string') url = fromFile.trim();
+  }
+  if (!url) {
+    console.error('Usage: od brand create <url> [--json]\n' +
+      '       od brand create --prompt-file <path|-> [--json]');
+    process.exit(2);
+  }
+
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        url,
+        ...(typeof flags.locale === 'string' && flags.locale.trim()
+          ? { locale: flags.locale.trim() }
+          : {}),
+      }),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) {
+    return structuredHttpFailure(resp);
+  }
+
+  // Extraction is agent-driven: this kickoff reserves the brand + a backing
+  // project with the target site open in a browser tab and a seeded prompt.
+  // The agent then runs the chain (measure → synthesize → `od brand finalize`).
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ok: true, ...data }, null, 2) + '\n');
+    return;
+  }
+  process.stderr.write(
+    '[brand] extraction project created — open it to run the agent, ' +
+    `then it self-finalizes with: od brand finalize ${data?.id ?? ''}\n`,
+  );
+  // Clean stdout result: "<id>\t<projectId>" so jq / cut / xargs can chain.
+  console.log(`${data?.id ?? ''}\t${data?.projectId ?? ''}`);
+}
+
+async function runBrandFinalize(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand finalize <id> [--project <projectId>] [--json]');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const body = {};
+  if (typeof flags.project === 'string' && flags.project.trim()) body.projectId = flags.project.trim();
+  if (typeof flags.locale === 'string' && flags.locale.trim()) body.locale = flags.locale.trim();
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/finalize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (resp.status === 404) {
+    console.error(`brand not found: ${id}`);
+    process.exit(4);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ok: true, ...data }, null, 2) + '\n');
+    return;
+  }
+  const name = data?.brand?.name ?? data?.id ?? id;
+  console.log(`${data?.id ?? id}\t${name}`);
+  if (data?.designSystemId) process.stderr.write(`[brand] registered design system ${data.designSystemId}\n`);
+}
+
+async function runBrandContinue(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand continue <id> [--json]');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/continue-extraction`, {
+      method: 'POST',
+      headers: { accept: 'application/json' },
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (resp.status === 404) {
+    console.error(`brand not found: ${id}`);
+    process.exit(4);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ok: true, ...data }, null, 2) + '\n');
+    return;
+  }
+  console.log([
+    data?.id ?? id,
+    data?.status ?? '-',
+    data?.projectId ?? '',
+    data?.conversationId ?? '',
+  ].join('\t'));
+}
+
+// Read a flag value as file content (or stdin when the value is "-"). Returns
+// null when the flag is unset. Mirrors readPromptFromFlags' file/stdin handling
+// but for an arbitrary flag name (--html-file / --css-file).
+async function readFileFlagOrStdin(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  if (value === '-') {
+    return await new Promise((resolve, reject) => {
+      let buf = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => { buf += chunk; });
+      process.stdin.on('end', () => resolve(buf));
+      process.stdin.on('error', reject);
+    });
+  }
+  const { readFile } = await import('node:fs/promises');
+  return await readFile(value, 'utf8');
+}
+
+// od brand extract-from-html <id> --html-file <path|-> [--css-file <path>]
+//   [--base-url <url>] [--json]
+// Re-runs extraction against pre-captured rendered HTML (e.g. a page an external
+// agent already loaded past an anti-bot wall), mirroring the UI's browser-assist
+// confirm path so the capability is reachable from the CLI too.
+async function runBrandExtractFromHtml(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand extract-from-html <id> --html-file <path|-> '
+      + '[--css-file <path>] [--base-url <url>] [--json]');
+    process.exit(2);
+  }
+  let html;
+  try {
+    html = await readFileFlagOrStdin(flags['html-file']);
+  } catch (err) {
+    console.error(`could not read --html-file: ${err.message}`);
+    process.exit(2);
+  }
+  if (!html || !html.trim()) {
+    console.error('--html-file <path|-> is required (the rendered page HTML)');
+    process.exit(2);
+  }
+  let css = '';
+  if (typeof flags['css-file'] === 'string' && flags['css-file'].length > 0) {
+    try {
+      css = (await readFileFlagOrStdin(flags['css-file'])) ?? '';
+    } catch (err) {
+      console.error(`could not read --css-file: ${err.message}`);
+      process.exit(2);
+    }
+  }
+  const body = { html };
+  if (css.trim()) body.css = css;
+  if (typeof flags['base-url'] === 'string' && flags['base-url'].trim()) {
+    body.baseUrl = flags['base-url'].trim();
+  }
+
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/extract-from-html`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (resp.status === 404) {
+    console.error(`brand not found: ${id}`);
+    process.exit(4);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ok: true, ...data }, null, 2) + '\n');
+    return;
+  }
+  const name = data?.brand?.name ?? data?.id ?? id;
+  console.log(`${data?.id ?? id}\t${name}`);
+  if (data?.designSystemId) {
+    process.stderr.write(`[brand] registered design system ${data.designSystemId}\n`);
+  }
+}
+
+async function runBrandPreview(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand preview <id> [--project <projectId>] [--json]');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const body = {};
+  if (typeof flags.project === 'string' && flags.project.trim()) body.projectId = flags.project.trim();
+  if (typeof flags.locale === 'string' && flags.locale.trim()) body.locale = flags.locale.trim();
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (resp.status === 404) {
+    console.error(`brand not found: ${id}`);
+    process.exit(4);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify({ ok: true, ...data }, null, 2) + '\n');
+    return;
+  }
+  // Clean stdout result: "<id>\t<file>" so the agent can confirm the path.
+  console.log(`${data?.id ?? id}\t${data?.file ?? 'brand.html'}`);
+}
+
+async function runBrandGet(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand get <id> [--json]');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}`);
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (resp.status === 404) {
+    console.error(`brand not found: ${id}`);
+    process.exit(4);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  const meta = data?.meta ?? {};
+  const brand = data?.brand ?? null;
+  console.log(`id\t${meta.id ?? id}`);
+  console.log(`name\t${brand?.name ?? '-'}`);
+  console.log(`domain\t${brandDomainForCli(meta.sourceUrl)}`);
+  console.log(`status\t${meta.status ?? '-'}`);
+  if (meta.designSystemId) console.log(`designSystem\t${meta.designSystemId}`);
+  if (meta.projectId) console.log(`project\t${meta.projectId}`);
+  if (Array.isArray(meta.systemFiles) && meta.systemFiles.length > 0) {
+    console.log(`files\t${meta.systemFiles.join(' ')}`);
+  }
+  if (brand?.tagline) console.log(`tagline\t${brand.tagline}`);
+  if (Array.isArray(brand?.colors) && brand.colors.length > 0) {
+    console.log(`colors\t${brand.colors.map((c) => c.hex).join(' ')}`);
+  }
+  if (meta.error) console.log(`error\t${meta.error}`);
+}
+
+async function runBrandDelete(rest) {
+  let flags;
+  try {
+    flags = parseFlags(rest, { string: BRAND_STRING_FLAGS, boolean: BRAND_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  const id = positionalArgs(rest, BRAND_STRING_FLAGS)[0];
+  if (!id) {
+    console.error('Usage: od brand delete <id> [--json]');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/brands/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json().catch(() => ({ ok: true }));
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  console.log(`[brand] deleted ${id}`);
+}
+
+function normalizeChatSessionModeFlag(value) {
+  if (value == null) return undefined;
+  const mode = String(value).trim().toLowerCase();
+  if (mode === 'design' || mode === 'chat' || mode === 'plan') return mode;
+  console.error('--mode must be one of: design, chat, plan');
+  process.exit(2);
+}
+
+function safeReadJsonFile(p) {
+  try {
+    if (p === '-') return JSON.parse(readFileSync(0, 'utf8'));
+    return JSON.parse(readFileSync(p, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function collectCliPositionals(argv, stringFlags = new Set()) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const value = argv[i];
+    if (value === '--') {
+      out.push(...argv.slice(i + 1));
+      break;
+    }
+    if (typeof value === 'string' && value.startsWith('--')) {
+      const eq = value.indexOf('=');
+      const key = eq >= 0 ? value.slice(2, eq) : value.slice(2);
+      if (eq < 0 && stringFlags.has(key)) i++;
+      continue;
+    }
+    out.push(value);
+  }
+  return out;
+}
+
+async function resolveFolderPathForCli(rawPath) {
+  const path = await import('node:path');
+  const os = await import('node:os');
+  const raw = typeof rawPath === 'string' && rawPath.trim().length > 0
+    ? rawPath.trim()
+    : (process.env.INIT_CWD || process.cwd());
+  const expanded = raw === '~'
+    ? os.homedir()
+    : raw.startsWith(`~${path.sep}`)
+      ? path.join(os.homedir(), raw.slice(2))
+      : raw;
+  return path.resolve(expanded);
+}
+
+async function basenameForCli(folderPath) {
+  const path = await import('node:path');
+  return path.basename(folderPath) || 'Imported project';
+}
+
+async function readRunMessageFromFlags(flags, fallback = null) {
+  if (typeof flags.message === 'string' && flags.message.length > 0) {
+    return flags.message;
+  }
+  const prompt = await readPromptFromFlags(flags);
+  if (typeof prompt === 'string' && prompt.length > 0) return prompt;
+  return fallback;
+}
+
+async function postJsonToDaemon(base, route, body, headers = {}) {
+  let resp;
+  try {
+    resp = await fetch(`${base}${route}`, {
+      method:  'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body:    JSON.stringify(body),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const errCode = data?.error?.code;
+    if (errCode && errCode in RECOVERABLE_EXIT_CODES) {
+      return exitWithStructuredError({
+        code:    errCode,
+        message: data.error.message ?? `HTTP ${resp.status}`,
+        data:    data.error.data,
+      });
+    }
+    console.error(`POST ${route} failed: ${resp.status} ${JSON.stringify(data)}`);
+    process.exit(1);
+  }
+  return data;
+}
+
+async function postImportFolderToDaemon(base, body, baseDir, workspaceHeaders = {}) {
+  const headers = { ...workspaceHeaders };
+  const importToken = await mintCliImportToken(baseDir);
+  if (importToken != null) {
+    headers['x-od-desktop-import-token'] = importToken;
+  }
+  return postJsonToDaemon(base, '/api/import/folder', body, headers);
+}
+
+async function runProject(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od project create [--name "<title>"] [--skill <id>] [--design-system <id>]
+                    [--plugin <id>] [--inputs <json>] [--metadata-json <path|->]
+                    [--mode design|chat|plan]
+  od project create-design-system <id> [--name "<title>"]
+                    [--prompt "<text>" | --prompt-file <path|->] [--json]
+                    Duplicate a project as a design-system workspace and seed
+                    the design-system generation prompt.
+  od project duplicate <id> [--name "<title>"] [--json]
+                    Duplicate a project and copy its Design Files.
+  od project import <baseDir> [--name "<title>"]
+  od project import-folder <path> [--name "<title>"] [--skill <id>]
+                    [--design-system <id>] [--json]
+  od project list                         List projects.
+  od project info <id>                    Print one project.
+  od project restore-automatic-scenario <id> [--json]
+                                          Restore the daemon-selected default
+                                          scenario with a snapshot CAS guard.
+  od project delete <id>                  Delete a project.
+  od project revoke-public-link <id> --path <file> --url <public-url>
+                    Revoke a public file link whose local publication record
                     was lost during an older daemon restart or upgrade.
   od project editors                      List locally-installed editors that
                                           can open a project (hand-off targets).

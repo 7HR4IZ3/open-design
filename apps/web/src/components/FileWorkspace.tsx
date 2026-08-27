@@ -106,6 +106,7 @@ import {
 import {
   resolveLocalizedText,
   type ChatSessionMode,
+  type MobileEditorMetadata,
   type InstalledPluginRecord,
   type LocalizedText,
   type WorkspaceCollabContext,
@@ -130,6 +131,7 @@ import type { PluginFolderAgentAction } from './design-files/pluginFolderActions
 import { designSystemGithubEvidenceState, repoConnectCopy } from './design-system-github-evidence';
 import { APP_CHROME_FILE_ACTIONS_ID } from './AppChromeHeader';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
+import { MOBILE_CANVAS_TAB, MobileCanvasEditor } from './MobileCanvasEditor';
 import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { Icon, type IconName } from './Icon';
 import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
@@ -370,6 +372,11 @@ interface Props {
    * have not yet been published. Null once caught up / not a shared project.
    */
   fileSyncBadge?: FileSyncBadgeState | null;
+  /** Mobile projects add the canonical canvas as a special workspace tab. */
+  mobileEditorProject?: boolean;
+  mobileEditorMetadata?: MobileEditorMetadata;
+  onMobileEditorManifestChange?: (metadata: MobileEditorMetadata) => void | Promise<void>;
+  onMobileEditorOpenFile?: (name: string) => void;
 }
 
 function noop(): void {}
@@ -1373,6 +1380,10 @@ export function FileWorkspace({
   materializationPending = false,
   readonlyNotice,
   fileSyncBadge = null,
+  mobileEditorProject = false,
+  mobileEditorMetadata,
+  onMobileEditorManifestChange,
+  onMobileEditorOpenFile,
 }: Props) {
   const refreshFilesWithoutResult = useCallback(async () => {
     await onRefreshFiles();
@@ -1391,7 +1402,11 @@ export function FileWorkspace({
     fileManagerViewedProjectRef.current = projectId;
     trackPageView(analytics.track, { page_name: 'file_manager' });
   }, [projectId, analytics.track]);
-  const defaultRootTab = designSystemProject ? DESIGN_SYSTEM_TAB : DESIGN_FILES_TAB;
+  const defaultRootTab = designSystemProject
+    ? DESIGN_SYSTEM_TAB
+    : mobileEditorProject
+      ? MOBILE_CANVAS_TAB
+      : DESIGN_FILES_TAB;
   // Persisted tabs come from the parent. Active tab can transiently point
   // at a pending sketch — pending sketches are not in tabsState.tabs.
   const persistedTabs = tabsState.tabs;
@@ -2014,6 +2029,7 @@ export function FileWorkspace({
     if (
       activeTab === DESIGN_FILES_TAB
       || activeTab === DESIGN_SYSTEM_TAB
+      || activeTab === MOBILE_CANVAS_TAB
     ) return;
     if (isBrowserTabId(activeTab)) {
       if (!browserTabs.some((tab) => tab.id === activeTab)) {
@@ -2042,7 +2058,7 @@ export function FileWorkspace({
     if (!openRequest) return;
     const name = openRequest.name;
     if (!name) return;
-    if (name === DESIGN_FILES_TAB || name === DESIGN_SYSTEM_TAB) {
+    if (name === DESIGN_FILES_TAB || name === DESIGN_SYSTEM_TAB || name === MOBILE_CANVAS_TAB) {
       const nextActive =
         name === DESIGN_SYSTEM_TAB && !designSystemProject
           ? DESIGN_FILES_TAB
@@ -2188,6 +2204,10 @@ export function FileWorkspace({
     }
     if (tabId === DESIGN_FILES_TAB) {
       setPersistedActive(DESIGN_FILES_TAB);
+      return;
+    }
+    if (tabId === MOBILE_CANVAS_TAB) {
+      if (mobileEditorProject) setPersistedActive(MOBILE_CANVAS_TAB);
       return;
     }
     if (isBrowserTabId(tabId)) {
@@ -3018,6 +3038,7 @@ export function FileWorkspace({
     if (
       activeTab === DESIGN_FILES_TAB
       || activeTab === DESIGN_SYSTEM_TAB
+      || activeTab === MOBILE_CANVAS_TAB
       || isBrowserTabId(activeTab)
     ) return null;
     const onDisk = visibleFiles.find((f) => f.name === activeTab);
@@ -3289,6 +3310,7 @@ export function FileWorkspace({
     if (
       activeTab === DESIGN_FILES_TAB
       || activeTab === DESIGN_SYSTEM_TAB
+      || activeTab === MOBILE_CANVAS_TAB
       || isBrowserTabId(activeTab)
     ) return null;
     return liveArtifactEntries.find((entry) => entry.tabId === activeTab) ?? null;
@@ -3296,6 +3318,7 @@ export function FileWorkspace({
 
   const activeTabHasRenderableSurface =
     (activeTab === DESIGN_SYSTEM_TAB && Boolean(designSystemProject))
+    || (activeTab === MOBILE_CANVAS_TAB && mobileEditorProject)
     || (isBrowserTabId(activeTab) && browserTabs.some((tab) => tab.id === activeTab))
     || isTerminalTabId(activeTab)
     || (isSideChatTabId(activeTab) && Boolean(chatConfig) && Boolean(chatAgentsById))
@@ -3521,12 +3544,13 @@ export function FileWorkspace({
   const workspaceTabIds = useMemo(() => {
     const ids: string[] = [];
     if (designSystemProject) ids.push(DESIGN_SYSTEM_TAB);
+    if (mobileEditorProject) ids.push(MOBILE_CANVAS_TAB);
     ids.push(DESIGN_FILES_TAB);
     for (const entry of visibleOrderedWorkspaceTabs) {
       ids.push(entry.kind === 'browser' ? entry.browserTab.id : entry.name);
     }
     return ids;
-  }, [designSystemProject, visibleOrderedWorkspaceTabs]);
+  }, [designSystemProject, mobileEditorProject, visibleOrderedWorkspaceTabs]);
 
   // Per-tab handler sets with stable identities. Tab is memoized; the inline
   // closures the strip map used to create handed every Tab fresh props on
@@ -3631,6 +3655,15 @@ export function FileWorkspace({
       });
     }
 
+    if (mobileEditorProject) {
+      push({
+        id: 'workspace:mobile-canvas',
+        kind: 'mobile-screen',
+        label: 'Mobile Canvas',
+        tabId: MOBILE_CANVAS_TAB,
+      });
+    }
+
     const trimmedDir = uploadDir.trim();
     const designFilesLabel = trimmedDir.split('/').filter(Boolean).pop() || t('workspace.designFiles');
     push({
@@ -3719,6 +3752,7 @@ export function FileWorkspace({
     conversations,
     designSystemProject,
     liveArtifactEntries,
+    mobileEditorProject,
     orderedWorkspaceTabs,
     resolvedDir,
     sketches,
@@ -3884,6 +3918,7 @@ export function FileWorkspace({
       className={[
         'workspace',
         designSystemProject ? 'has-design-system-tab' : '',
+        mobileEditorProject ? 'has-mobile-canvas-tab' : '',
         browserSnapshotToast ? 'has-browser-snapshot-toast' : '',
       ].filter(Boolean).join(' ')}
       data-testid="file-workspace"
@@ -3966,6 +4001,23 @@ export function FileWorkspace({
                 <Icon name="blocks" size={13} />
               </span>
               <span className="ws-tab-label">{t('dsManager.tabDesignSystem')}</span>
+            </button>
+          ) : null}
+          {!initialMaterializationPending && mobileEditorProject ? (
+            <button
+              type="button"
+              className={`ws-tab mobile-canvas-tab ${activeTab === MOBILE_CANVAS_TAB ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeTab === MOBILE_CANVAS_TAB}
+              tabIndex={0}
+              data-testid="mobile-canvas-tab"
+              onClick={() => setPersistedActive(MOBILE_CANVAS_TAB)}
+              title="Mobile Canvas"
+            >
+              <span className="tab-icon" aria-hidden>
+                <Icon name="smartphone" size={14} />
+              </span>
+              <span className="ws-tab-label">Mobile Canvas</span>
             </button>
           ) : null}
           <button
@@ -4273,6 +4325,18 @@ export function FileWorkspace({
             editFocusRequest={designSystemEditRequest}
             onConnectRepo={onConnectRepo}
             githubConnected={githubConnected}
+          />
+        ) : activeTab === MOBILE_CANVAS_TAB && mobileEditorProject ? (
+          <MobileCanvasEditor
+            projectId={projectId}
+            files={visibleFiles}
+            metadata={mobileEditorMetadata}
+            workspaceContext={workspaceContext}
+            viewerOnly={viewerOnly}
+            onManifestChange={onMobileEditorManifestChange}
+            onOpenFile={(name) => onMobileEditorOpenFile?.(name) ?? openFile(name)}
+            onOpenSourceFiles={() => setPersistedActive(DESIGN_FILES_TAB)}
+            onRefreshFiles={refreshFilesWithoutResult}
           />
         ) : designFilesTabActive ? (
           <DesignFilesPanel

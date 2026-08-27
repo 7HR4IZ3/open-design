@@ -339,10 +339,12 @@ export function MobileCanvasEditor({
     [files],
   );
   const availableNames = useMemo(() => htmlFiles.map((file) => file.name), [htmlFiles]);
-  const screens = useMemo(
+  const reconciledScreens = useMemo(
     () => reconcileMobileScreenRecords(metadata?.screens ?? [], availableNames),
     [availableNames, metadata?.screens],
   );
+  const [localScreens, setLocalScreens] = useState<MobileScreenRecord[] | null>(null);
+  const screens = localScreens ?? reconciledScreens;
   const [editor, setEditor] = useState(metadata?.editor ?? DEFAULT_EDITOR);
   const [internalSelectedScreenId, setInternalSelectedScreenId] = useState<string | null>(
     metadata?.selectedScreenId ?? null,
@@ -370,9 +372,44 @@ export function MobileCanvasEditor({
   const [interactionMode, setInteractionMode] = useState<CanvasInteractionMode>('select');
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const editorRef = useRef(editor);
 
   useEffect(() => {
-    setEditor(metadata?.editor ?? DEFAULT_EDITOR);
+    setLocalScreens(null);
+  }, [reconciledScreens]);
+
+  useEffect(() => {
+    setLocalScreens(null);
+  }, [projectId]);
+
+  const persist = useCallback((
+    nextScreens: MobileScreenRecord[],
+    nextSelected = effectiveSelectedScreenId ?? null,
+    nextEditor = editorRef.current,
+  ) => {
+    const next = manifestFor(metadata, nextScreens, nextSelected, nextEditor);
+    setLocalScreens(nextScreens);
+    lastPersistedSignatureRef.current = screenSignature(next);
+    void onManifestChange?.(next);
+    if (!viewerOnly) {
+      lastManifestFileSignatureRef.current = JSON.stringify({ screens: next.screens, selectedScreenId: next.selectedScreenId ?? null });
+      void writeProjectTextFile(
+        projectId,
+        MOBILE_MANIFEST_FILE,
+        manifestDocument(projectId, next),
+        { versionSource: 'manual' },
+        workspaceContext,
+      );
+    }
+  }, [effectiveSelectedScreenId, metadata, onManifestChange, projectId, viewerOnly, workspaceContext]);
+
+  useEffect(() => {
+    const incoming = metadata?.editor ?? DEFAULT_EDITOR;
+    setEditor((current) => {
+      if (current.x === incoming.x && current.y === incoming.y && current.zoom === incoming.zoom) return current;
+      editorRef.current = incoming;
+      return incoming;
+    });
   }, [metadata?.editor]);
 
   useEffect(() => {
@@ -419,7 +456,7 @@ export function MobileCanvasEditor({
       : metadata?.selectedScreenId && screens.some((screen) => screen.id === metadata.selectedScreenId)
         ? metadata.selectedScreenId
         : screens[0]?.id ?? null;
-    const next = manifestFor(metadata, screens, nextSelected, editor);
+    const next = manifestFor(metadata, screens, nextSelected, editorRef.current);
     const signature = screenSignature(next);
     if (signature === lastPersistedSignatureRef.current) return;
     lastPersistedSignatureRef.current = signature;
@@ -435,7 +472,7 @@ export function MobileCanvasEditor({
         workspaceContext,
       );
     }
-  }, [editor, effectiveSelectedScreenId, htmlFiles.length, metadata, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, htmlFiles.length, metadata, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
 
   useEffect(() => {
     if (bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;
@@ -470,13 +507,24 @@ export function MobileCanvasEditor({
     return () => { cancelled = true; };
   }, [projectId, screens, workspaceContext]);
 
-  const selectScreen = useCallback((screen: MobileScreenRecord | null) => {
+  const selectScreen = useCallback((
+    screen: MobileScreenRecord | null,
+    { persistChange = true } = {},
+  ) => {
     if (selectedScreenId === undefined) setInternalSelectedScreenId(screen?.id ?? null);
     onSelectScreen?.(screen);
+    let nextEditor = editorRef.current;
     if (screen) {
-      setEditor((current) => ({ ...current, x: Math.max(24, 420 - screen.x * current.zoom), y: Math.max(24, 220 - screen.y * current.zoom) }));
+      nextEditor = {
+        ...editorRef.current,
+        x: Math.max(24, 420 - screen.x * editorRef.current.zoom),
+        y: Math.max(24, 220 - screen.y * editorRef.current.zoom),
+      };
+      editorRef.current = nextEditor;
+      setEditor(nextEditor);
     }
-  }, [onSelectScreen, selectedScreenId]);
+    if (persistChange) persist(screens, screen?.id ?? null, nextEditor);
+  }, [onSelectScreen, persist, screens, selectedScreenId]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -499,22 +547,6 @@ export function MobileCanvasEditor({
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [flowPreviewId, screens, selectScreen]);
-
-  const persist = useCallback((nextScreens: MobileScreenRecord[], nextSelected = effectiveSelectedScreenId ?? null, nextEditor = editor) => {
-    const next = manifestFor(metadata, nextScreens, nextSelected, nextEditor);
-    lastPersistedSignatureRef.current = screenSignature(next);
-    void onManifestChange?.(next);
-    if (!viewerOnly) {
-      lastManifestFileSignatureRef.current = JSON.stringify({ screens: next.screens, selectedScreenId: next.selectedScreenId ?? null });
-      void writeProjectTextFile(
-        projectId,
-        MOBILE_MANIFEST_FILE,
-        manifestDocument(projectId, next),
-        { versionSource: 'manual' },
-        workspaceContext,
-      );
-    }
-  }, [editor, effectiveSelectedScreenId, metadata, onManifestChange, projectId, viewerOnly, workspaceContext]);
 
   const createScreen = useCallback(async () => {
     if (viewerOnly || screens.length >= MOBILE_MAX_SCREENS) return;
@@ -613,18 +645,23 @@ export function MobileCanvasEditor({
   const flowScreen = screens.find((screen) => screen.id === flowPreviewId) ?? screens[0] ?? null;
   const flowHtml = flowScreen ? sources[flowScreen.id] ?? '' : '';
   const zoomLabel = `${Math.round(editor.zoom * 100)}%`;
+  const commitEditor = useCallback((nextEditor: MobileEditorMetadata['editor']) => {
+    editorRef.current = nextEditor;
+    setEditor(nextEditor);
+    persist(screens, effectiveSelectedScreenId ?? null, nextEditor);
+  }, [effectiveSelectedScreenId, persist, screens]);
   const zoomBy = useCallback((delta: number) => {
-    setEditor((current) => ({ ...current, zoom: clampZoom(current.zoom + delta) }));
-  }, []);
+    commitEditor({ ...editorRef.current, zoom: clampZoom(editorRef.current.zoom + delta) });
+  }, [commitEditor]);
   const centerOnWorldPoint = useCallback((point: { x: number; y: number }) => {
     const width = canvasSize.width || 720;
     const height = canvasSize.height || 560;
-    setEditor((current) => ({
-      ...current,
-      x: width / 2 - point.x * current.zoom,
-      y: height / 2 - point.y * current.zoom,
-    }));
-  }, [canvasSize.height, canvasSize.width]);
+    commitEditor({
+      ...editorRef.current,
+      x: width / 2 - point.x * editorRef.current.zoom,
+      y: height / 2 - point.y * editorRef.current.zoom,
+    });
+  }, [canvasSize.height, canvasSize.width, commitEditor]);
   const centerSelected = useCallback(() => {
     if (!selected) return;
     centerOnWorldPoint({
@@ -641,12 +678,12 @@ export function MobileCanvasEditor({
       (width - padding * 2) / Math.max(bounds.maxX - bounds.minX, 1),
       (height - padding * 2) / Math.max(bounds.maxY - bounds.minY, 1),
     ));
-    setEditor({
+    commitEditor({
       zoom,
       x: width / 2 - (bounds.minX + (bounds.maxX - bounds.minX) / 2) * zoom,
       y: height / 2 - (bounds.minY + (bounds.maxY - bounds.minY) / 2) * zoom,
     });
-  }, [canvasSize.height, canvasSize.width, screens]);
+  }, [canvasSize.height, canvasSize.width, commitEditor, screens]);
   const toggleFullscreen = useCallback(async () => {
     const shell = canvasShellRef.current;
     if (!shell) return;
@@ -668,6 +705,12 @@ export function MobileCanvasEditor({
       screens.map((screen) => screen.id === current.id ? { ...nextCurrent, ...placement } : screen),
       current.id,
     );
+  }, [effectiveSelectedScreenId, persist, screens, viewerOnly]);
+
+  const finishPan = useCallback(() => {
+    if (!panRef.current) return;
+    panRef.current = null;
+    if (!viewerOnly) persist(screens, effectiveSelectedScreenId ?? null, editorRef.current);
   }, [effectiveSelectedScreenId, persist, screens, viewerOnly]);
 
   const exportHtmlScreens = useCallback(async () => {
@@ -757,15 +800,15 @@ export function MobileCanvasEditor({
         </div>
         <div className="mobile-editor-actions">
           <input ref={importInputRef} className="mobile-import-input" type="file" multiple accept=".html,.htm,.png,.jpg,.jpeg,.webp,.svg,.fig" onChange={(event) => void importFiles(event)} />
-          <button type="button" className="mobile-editor-button subtle" onClick={() => importInputRef.current?.click()} disabled={viewerOnly || busy !== null}><Icon name="import" size={14} /> Import</button>
-          <button type="button" className="mobile-editor-button subtle" onClick={onOpenSourceFiles} disabled={!onOpenSourceFiles}><Icon name="file-code" size={14} /> Source files</button>
-          <button type="button" className="mobile-editor-button subtle" onClick={() => setFlowPreviewId(flowScreen?.id ?? null)} disabled={!flowScreen}><Icon name="play" size={14} /> Preview flow</button>
-          <button type="button" className="mobile-editor-button subtle" onClick={() => selected && onOpenFile?.(selected.file)} disabled={!selected || !onOpenFile}><Icon name="edit" size={14} /> Open as design file</button>
+          <button type="button" className="mobile-editor-button subtle" onClick={() => importInputRef.current?.click()} disabled={viewerOnly || busy !== null} aria-label="Import files" title="Import files"><Icon name="import" size={14} /><span className="mobile-editor-action-label">Import</span></button>
+          <button type="button" className="mobile-editor-button subtle" onClick={onOpenSourceFiles} disabled={!onOpenSourceFiles} aria-label="Open source files" title="Open source files"><Icon name="file-code" size={14} /><span className="mobile-editor-action-label">Source files</span></button>
+          <button type="button" className="mobile-editor-button subtle" onClick={() => setFlowPreviewId(flowScreen?.id ?? null)} disabled={!flowScreen} aria-label="Preview flow" title="Preview flow"><Icon name="play" size={14} /><span className="mobile-editor-action-label">Preview flow</span></button>
+          <button type="button" className="mobile-editor-button subtle" onClick={() => selected && onOpenFile?.(selected.file)} disabled={!selected || !onOpenFile} aria-label="Open as design file" title="Open as design file"><Icon name="edit" size={14} /><span className="mobile-editor-action-label">Open design file</span></button>
           <div className="mobile-export-control">
-            <button type="button" className="mobile-editor-button subtle" onClick={() => setExportOpen((open) => !open)} disabled={exportBusy !== null}><Icon name="download" size={14} /> Export <Icon name="chevron-down" size={12} /></button>
+            <button type="button" className="mobile-editor-button subtle" onClick={() => setExportOpen((open) => !open)} disabled={exportBusy !== null} aria-label="Export mobile prototype" title="Export mobile prototype"><Icon name="download" size={14} /><span className="mobile-editor-action-label">Export</span><Icon name="chevron-down" size={12} /></button>
             {exportOpen ? <div className="mobile-export-menu" role="menu"><button type="button" role="menuitem" onClick={() => void exportHtmlScreens()}><Icon name="file-code" size={13} /> HTML screens (.zip)</button><button type="button" role="menuitem" onClick={() => void exportPngScreens()}><Icon name="image" size={13} /> PNG screens (.zip)</button><button type="button" role="menuitem" onClick={exportSpa}><Icon name="globe" size={13} /> Runnable SPA (.zip)</button></div> : null}
           </div>
-          <button type="button" className="mobile-editor-button primary" onClick={() => void createScreen()} disabled={viewerOnly || screens.length >= MOBILE_MAX_SCREENS || busy !== null}><Icon name="plus" size={14} /> New screen</button>
+          <button type="button" className="mobile-editor-button primary" onClick={() => void createScreen()} disabled={viewerOnly || screens.length >= MOBILE_MAX_SCREENS || busy !== null} aria-label="Create new screen" title="Create new screen"><Icon name="plus" size={14} /><span className="mobile-editor-action-label">New screen</span></button>
         </div>
       </header>
       {error ? <div className="mobile-editor-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="close" size={13} /></button></div> : null}
@@ -796,7 +839,7 @@ export function MobileCanvasEditor({
                 <span>{zoomLabel}</span>
                 <button type="button" onClick={() => zoomBy(0.1)} aria-label="Zoom in" title="Zoom in"><Icon name="zoom-in" size={14} /></button>
               </span>
-              <button type="button" onClick={() => setEditor(DEFAULT_EDITOR)} title="Reset view" aria-label="Reset view"><Icon name="refresh" size={14} /></button>
+              <button type="button" onClick={() => commitEditor(DEFAULT_EDITOR)} title="Reset view" aria-label="Reset view"><Icon name="refresh" size={14} /></button>
               <button type="button" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}><Icon name={isFullscreen ? 'minimize' : 'maximize'} size={14} /></button>
             </div>
           </div>
@@ -805,16 +848,21 @@ export function MobileCanvasEditor({
             className={`mobile-canvas-viewport${interactionMode === 'pan' ? ' is-pan-mode' : ''}`}
             onPointerDown={(event) => {
               if (interactionMode !== 'pan' && event.target !== event.currentTarget) return;
-              panRef.current = { x: editor.x, y: editor.y, startX: event.clientX, startY: event.clientY };
+              panRef.current = { x: editorRef.current.x, y: editorRef.current.y, startX: event.clientX, startY: event.clientY };
               event.currentTarget.setPointerCapture(event.pointerId);
             }}
             onPointerMove={(event) => {
               const start = panRef.current;
               if (!start) return;
-              setEditor((current) => ({ ...current, x: start.x + event.clientX - start.startX, y: start.y + event.clientY - start.startY }));
+              setEditor((current) => {
+                const next = { ...current, x: start.x + event.clientX - start.startX, y: start.y + event.clientY - start.startY };
+                editorRef.current = next;
+                return next;
+              });
             }}
-            onPointerUp={() => { panRef.current = null; }}
-            onPointerCancel={() => { panRef.current = null; }}
+            onPointerUp={finishPan}
+            onPointerCancel={finishPan}
+            onLostPointerCapture={finishPan}
           >
             <div className="mobile-canvas-world" style={{ transform: `translate(${editor.x}px, ${editor.y}px) scale(${editor.zoom})` }}>
               {screens.map((screen) => {
@@ -823,13 +871,14 @@ export function MobileCanvasEditor({
                 return (
                   <article
                     key={screen.id}
-                    className={`mobile-device-frame${selected?.id === screen.id ? ' selected' : ''}`}
+                    className={`mobile-device-frame mobile-device-frame--${screen.deviceFrame}${selected?.id === screen.id ? ' selected' : ''}`}
+                    data-device-frame={screen.deviceFrame}
                     style={{ left: dragPositions[screen.id]?.x ?? screen.x, top: dragPositions[screen.id]?.y ?? screen.y, width: screen.width + 24 }}
                     onClick={() => { if (interactionMode === 'select') selectScreen(screen); }}
                     onPointerDown={(event) => {
-                      event.stopPropagation();
                       if (interactionMode !== 'select') return;
-                      selectScreen(screen);
+                      event.stopPropagation();
+                      selectScreen(screen, { persistChange: false });
                       if (viewerOnly) return;
                       screenDragRef.current = { id: screen.id, x: screen.x, y: screen.y, startX: event.clientX, startY: event.clientY };
                       event.currentTarget.setPointerCapture(event.pointerId);
@@ -837,13 +886,13 @@ export function MobileCanvasEditor({
                     onPointerMove={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
-                      setDragPositions((current) => ({ ...current, [screen.id]: { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom), snapToGrid) } }));
+                      setDragPositions((current) => ({ ...current, [screen.id]: { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editorRef.current.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editorRef.current.zoom), snapToGrid) } }));
                     }}
                     onPointerUp={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
                       screenDragRef.current = null;
-                      const nextPosition = { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom), snapToGrid) };
+                      const nextPosition = { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editorRef.current.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editorRef.current.zoom), snapToGrid) };
                       const moved = Math.abs(event.clientX - drag.startX) > 2 || Math.abs(event.clientY - drag.startY) > 2;
                       const candidate = { ...screen, ...nextPosition };
                       setDragPositions((current) => { const next = { ...current }; delete next[screen.id]; return next; });
@@ -853,7 +902,7 @@ export function MobileCanvasEditor({
                         setError('Screens cannot overlap. Choose an open canvas position.');
                         return;
                       }
-                      persist(screens.map((other) => other.id === screen.id ? { ...other, ...nextPosition, updatedAt: now() } : other), screen.id);
+                      persist(screens.map((other) => other.id === screen.id ? { ...other, ...nextPosition, updatedAt: now() } : other), screen.id, editorRef.current);
                     }}
                     onPointerCancel={() => {
                       screenDragRef.current = null;
@@ -885,9 +934,9 @@ export function MobileCanvasEditor({
             <div className="mobile-inspector-meta"><span>Stable ID</span><strong>{selected.id}</strong></div>
             <div className="mobile-inspector-meta"><span>Frame</span><strong>{selected.deviceFrame} · {selected.width}×{selected.height}</strong></div>
             <div className="mobile-inspector-fields">
-              <label><span>Device frame</span><select value={selected.deviceFrame} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ deviceFrame: event.target.value as MobileScreenRecord['deviceFrame'] })}><option value="generic-phone">Generic phone</option><option value="iphone">iPhone</option><option value="android">Android</option><option value="tablet">Tablet</option></select></label>
-              <label><span>Orientation</span><select value={selected.orientation} disabled={viewerOnly} onChange={(event) => { const orientation = event.target.value as MobileScreenRecord['orientation']; updateSelectedScreen({ orientation, width: orientation === 'portrait' ? 390 : 844, height: orientation === 'portrait' ? 844 : 390 }); }}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
-              <label><span>Transition</span><select value={selected.transition ?? 'none'} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ transition: event.target.value as MobileScreenRecord['transition'] })}><option value="none">None</option><option value="fade">Fade</option><option value="slide-left">Slide left</option><option value="slide-right">Slide right</option><option value="modal">Modal</option></select></label>
+              <label><span>Device frame</span><select aria-label="Device frame" value={selected.deviceFrame} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ deviceFrame: event.target.value as MobileScreenRecord['deviceFrame'] })}><option value="generic-phone">Generic phone</option><option value="iphone">iPhone</option><option value="android">Android</option><option value="tablet">Tablet</option></select></label>
+              <label><span>Orientation</span><select aria-label="Orientation" value={selected.orientation} disabled={viewerOnly} onChange={(event) => { const orientation = event.target.value as MobileScreenRecord['orientation']; updateSelectedScreen({ orientation, width: orientation === 'portrait' ? 390 : 844, height: orientation === 'portrait' ? 844 : 390 }); }}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
+              <label><span>Transition</span><select aria-label="Transition" value={selected.transition ?? 'none'} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ transition: event.target.value as MobileScreenRecord['transition'] })}><option value="none">None</option><option value="fade">Fade</option><option value="slide-left">Slide left</option><option value="slide-right">Slide right</option><option value="modal">Modal</option></select></label>
             </div>
             <div className="mobile-inspector-actions">
               <button type="button" onClick={() => onOpenFile?.(selected.file)} disabled={!onOpenFile}><Icon name="edit" size={14} /> Visual edit</button>

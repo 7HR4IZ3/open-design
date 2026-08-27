@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe('MobileCanvasEditor', () => {
-  it('renders the selected device frame immediately after changing the frame option', async () => {
+  it('keeps only the orientation control and updates the frame immediately', async () => {
     const onManifestChange = vi.fn();
     render(
       <MobileCanvasEditor
@@ -79,13 +79,15 @@ describe('MobileCanvasEditor', () => {
     const frame = await screen.findByRole('article');
     expect(frame).toHaveAttribute('data-device-frame', 'generic-phone');
 
-    const deviceFrameSelect = frame.closest('section')?.querySelector('select');
-    if (!(deviceFrameSelect instanceof HTMLSelectElement)) throw new Error('device frame selector not rendered');
-    fireEvent.change(deviceFrameSelect, { target: { value: 'iphone' } });
+    const selects = frame.closest('section')?.querySelectorAll('select');
+    expect(selects).toHaveLength(1);
+    const orientationSelect = selects?.[0];
+    if (!(orientationSelect instanceof HTMLSelectElement)) throw new Error('orientation selector not rendered');
+    fireEvent.change(orientationSelect, { target: { value: 'landscape' } });
 
-    await waitFor(() => expect(frame).toHaveAttribute('data-device-frame', 'iphone'));
+    await waitFor(() => expect(frame).toHaveStyle({ width: '868px' }));
     expect(onManifestChange).toHaveBeenCalledWith(expect.objectContaining({
-      screens: [expect.objectContaining({ deviceFrame: 'iphone' })],
+      screens: [expect.objectContaining({ orientation: 'landscape', width: 844, height: 390 })],
     }));
   });
 

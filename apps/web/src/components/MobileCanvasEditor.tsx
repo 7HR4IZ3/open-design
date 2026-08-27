@@ -362,7 +362,15 @@ export function MobileCanvasEditor({
   const flowFrameRef = useRef<HTMLIFrameElement | null>(null);
   const bootstrappedProjectRef = useRef<string | null>(null);
   const panRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
-  const screenDragRef = useRef<{ id: string; x: number; y: number; startX: number; startY: number } | null>(null);
+  const screenDragRef = useRef<{
+    id: string;
+    x: number;
+    y: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressNextScreenClickRef = useRef(false);
   const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const lastManifestFileSignatureRef = useRef<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -509,12 +517,12 @@ export function MobileCanvasEditor({
 
   const selectScreen = useCallback((
     screen: MobileScreenRecord | null,
-    { persistChange = true } = {},
+    { persistChange = true, focus = true } = {},
   ) => {
     if (selectedScreenId === undefined) setInternalSelectedScreenId(screen?.id ?? null);
     onSelectScreen?.(screen);
     let nextEditor = editorRef.current;
-    if (screen) {
+    if (screen && focus) {
       nextEditor = {
         ...editorRef.current,
         x: Math.max(24, 420 - screen.x * editorRef.current.zoom),
@@ -827,6 +835,36 @@ export function MobileCanvasEditor({
           <div className="mobile-canvas-toolbar">
             <span>{selected ? <><b>{selected.name}</b><span className="mobile-selection-id">{selected.id.slice(0, 8)}</span></> : 'Select a screen'}</span>
             <div className="mobile-canvas-controls">
+              {selected ? (
+                <>
+                  <label className="mobile-canvas-orientation" title="Screen orientation">
+                    <Icon name="smartphone" size={13} />
+                    <select
+                      aria-label="Orientation"
+                      value={selected.orientation}
+                      disabled={viewerOnly}
+                      onChange={(event) => {
+                        const orientation = event.target.value as MobileScreenRecord['orientation'];
+                        updateSelectedScreen({
+                          orientation,
+                          width: orientation === 'portrait' ? 390 : 844,
+                          height: orientation === 'portrait' ? 844 : 390,
+                        });
+                      }}
+                    >
+                      <option value="portrait">Portrait</option>
+                      <option value="landscape">Landscape</option>
+                    </select>
+                  </label>
+                  <div className="mobile-canvas-screen-actions" role="group" aria-label="Selected screen actions">
+                    <button type="button" onClick={() => void renameScreen()} disabled={viewerOnly || busy !== null} title="Rename screen" aria-label="Rename screen"><Icon name="pencil" size={14} /></button>
+                    <button type="button" onClick={() => void duplicateScreen()} disabled={viewerOnly || busy !== null || screens.length >= MOBILE_MAX_SCREENS} title="Duplicate screen" aria-label="Duplicate screen"><Icon name="copy" size={14} /></button>
+                    <button type="button" onClick={() => reorder(-1)} disabled={viewerOnly || selected.order === 0} title="Move screen earlier" aria-label="Move screen earlier"><Icon name="arrow-up" size={14} /></button>
+                    <button type="button" onClick={() => reorder(1)} disabled={viewerOnly || selected.order >= screens.length - 1} title="Move screen later" aria-label="Move screen later"><Icon name="chevron-down" size={14} /></button>
+                    <button type="button" className="danger" onClick={() => void deleteScreen()} disabled={viewerOnly || screens.length <= 1 || busy !== null} title="Delete screen" aria-label="Delete screen"><Icon name="trash" size={14} /></button>
+                  </div>
+                </>
+              ) : null}
               <div className="mobile-canvas-control-group" role="group" aria-label="Canvas mode">
                 <button type="button" className={interactionMode === 'select' ? 'active' : ''} onClick={() => setInteractionMode('select')} aria-pressed={interactionMode === 'select'} title="Select mode" aria-label="Select mode"><Icon name="artboard" size={14} /></button>
                 <button type="button" className={interactionMode === 'pan' ? 'active' : ''} onClick={() => setInteractionMode('pan')} aria-pressed={interactionMode === 'pan'} title="Pan mode" aria-label="Pan mode"><Icon name="orbit" size={14} /></button>
@@ -874,26 +912,37 @@ export function MobileCanvasEditor({
                     className={`mobile-device-frame mobile-device-frame--${screen.deviceFrame}${selected?.id === screen.id ? ' selected' : ''}`}
                     data-device-frame={screen.deviceFrame}
                     style={{ left: dragPositions[screen.id]?.x ?? screen.x, top: dragPositions[screen.id]?.y ?? screen.y, width: screen.width + 24 }}
-                    onClick={() => { if (interactionMode === 'select') selectScreen(screen); }}
+                    onClick={() => {
+                      if (suppressNextScreenClickRef.current) {
+                        suppressNextScreenClickRef.current = false;
+                        return;
+                      }
+                      if (interactionMode === 'select') selectScreen(screen);
+                    }}
                     onPointerDown={(event) => {
                       if (interactionMode !== 'select') return;
+                      suppressNextScreenClickRef.current = false;
                       event.stopPropagation();
-                      selectScreen(screen, { persistChange: false });
+                      selectScreen(screen, { persistChange: false, focus: false });
                       if (viewerOnly) return;
-                      screenDragRef.current = { id: screen.id, x: screen.x, y: screen.y, startX: event.clientX, startY: event.clientY };
+                      screenDragRef.current = { id: screen.id, x: screen.x, y: screen.y, startX: event.clientX, startY: event.clientY, moved: false };
                       event.currentTarget.setPointerCapture(event.pointerId);
                     }}
                     onPointerMove={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
-                      setDragPositions((current) => ({ ...current, [screen.id]: { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editorRef.current.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editorRef.current.zoom), snapToGrid) } }));
+                      const deltaX = event.clientX - drag.startX;
+                      const deltaY = event.clientY - drag.startY;
+                      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) drag.moved = true;
+                      setDragPositions((current) => ({ ...current, [screen.id]: { x: snapCanvasPosition(Math.max(0, drag.x + deltaX / editorRef.current.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + deltaY / editorRef.current.zoom), snapToGrid) } }));
                     }}
                     onPointerUp={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
                       screenDragRef.current = null;
                       const nextPosition = { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editorRef.current.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editorRef.current.zoom), snapToGrid) };
-                      const moved = Math.abs(event.clientX - drag.startX) > 2 || Math.abs(event.clientY - drag.startY) > 2;
+                      const moved = drag.moved || Math.abs(event.clientX - drag.startX) > 2 || Math.abs(event.clientY - drag.startY) > 2;
+                      suppressNextScreenClickRef.current = moved;
                       const candidate = { ...screen, ...nextPosition };
                       setDragPositions((current) => { const next = { ...current }; delete next[screen.id]; return next; });
                       if (!moved) return;
@@ -905,6 +954,10 @@ export function MobileCanvasEditor({
                       persist(screens.map((other) => other.id === screen.id ? { ...other, ...nextPosition, updatedAt: now() } : other), screen.id, editorRef.current);
                     }}
                     onPointerCancel={() => {
+                      screenDragRef.current = null;
+                      setDragPositions((current) => { const next = { ...current }; delete next[screen.id]; return next; });
+                    }}
+                    onLostPointerCapture={() => {
                       screenDragRef.current = null;
                       setDragPositions((current) => { const next = { ...current }; delete next[screen.id]; return next; });
                     }}
@@ -926,28 +979,6 @@ export function MobileCanvasEditor({
             />
           </div>
         </div>
-        <aside className="mobile-screen-inspector" aria-label="Selected screen actions">
-          {selected ? <>
-            <div className="mobile-inspector-kicker">Selected screen</div>
-            <h3>{selected.name}</h3>
-            <code>{selected.file}</code>
-            <div className="mobile-inspector-meta"><span>Stable ID</span><strong>{selected.id}</strong></div>
-            <div className="mobile-inspector-meta"><span>Frame</span><strong>{selected.deviceFrame} · {selected.width}×{selected.height}</strong></div>
-            <div className="mobile-inspector-fields">
-              <label><span>Device frame</span><select aria-label="Device frame" value={selected.deviceFrame} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ deviceFrame: event.target.value as MobileScreenRecord['deviceFrame'] })}><option value="generic-phone">Generic phone</option><option value="iphone">iPhone</option><option value="android">Android</option><option value="tablet">Tablet</option></select></label>
-              <label><span>Orientation</span><select aria-label="Orientation" value={selected.orientation} disabled={viewerOnly} onChange={(event) => { const orientation = event.target.value as MobileScreenRecord['orientation']; updateSelectedScreen({ orientation, width: orientation === 'portrait' ? 390 : 844, height: orientation === 'portrait' ? 844 : 390 }); }}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
-              <label><span>Transition</span><select aria-label="Transition" value={selected.transition ?? 'none'} disabled={viewerOnly} onChange={(event) => updateSelectedScreen({ transition: event.target.value as MobileScreenRecord['transition'] })}><option value="none">None</option><option value="fade">Fade</option><option value="slide-left">Slide left</option><option value="slide-right">Slide right</option><option value="modal">Modal</option></select></label>
-            </div>
-            <div className="mobile-inspector-actions">
-              <button type="button" onClick={() => onOpenFile?.(selected.file)} disabled={!onOpenFile}><Icon name="edit" size={14} /> Visual edit</button>
-              <button type="button" onClick={() => void renameScreen()} disabled={viewerOnly || busy !== null}><Icon name="pencil" size={14} /> Rename</button>
-              <button type="button" onClick={() => void duplicateScreen()} disabled={viewerOnly || busy !== null || screens.length >= MOBILE_MAX_SCREENS}><Icon name="copy" size={14} /> Duplicate</button>
-              <button type="button" onClick={() => reorder(-1)} disabled={viewerOnly || selected.order === 0}><Icon name="arrow-up" size={14} /> Move earlier</button>
-              <button type="button" onClick={() => reorder(1)} disabled={viewerOnly || selected.order >= screens.length - 1}><Icon name="chevron-down" size={14} /> Move later</button>
-              <button type="button" className="danger" onClick={() => void deleteScreen()} disabled={viewerOnly || screens.length <= 1 || busy !== null}><Icon name="trash" size={14} /> Delete screen</button>
-            </div>
-          </> : <div className="mobile-inspector-empty">Click inside a screen to select it and attach it to the next prompt.</div>}
-        </aside>
       </div>
       {flowPreviewId && flowScreen ? (
         <div className="mobile-flow-modal" role="dialog" aria-modal="true" aria-label="Mobile flow preview">

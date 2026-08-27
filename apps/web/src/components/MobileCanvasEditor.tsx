@@ -270,8 +270,8 @@ function MobileCanvasMinimap({
   const mapSize = (value: number) => Math.max(2, value * scale);
   const centerFromPointer = (clientX: number, clientY: number, rect: DOMRect) => {
     onCenter({
-      x: bounds.minX + ((clientX - rect.left) / rect.width) * worldWidth,
-      y: bounds.minY + ((clientY - rect.top) / rect.height) * worldHeight,
+      x: bounds.minX + Math.max(0, Math.min(worldWidth, (clientX - rect.left - offsetX) / scale)),
+      y: bounds.minY + Math.max(0, Math.min(worldHeight, (clientY - rect.top - offsetY) / scale)),
     });
   };
 

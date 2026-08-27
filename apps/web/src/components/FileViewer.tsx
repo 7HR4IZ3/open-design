@@ -615,6 +615,7 @@ const MAX_CACHED_PREVIEW_VIEWPORTS = 128;
 // an immediate dismiss when the pointer really leaves.
 const HOVER_CARD_DISMISS_DELAY_MS = 80;
 const htmlPreviewViewportState = new Map<string, PreviewViewportId>();
+const htmlPreviewViewportRequestState = new Map<string, number>();
 // Desktop-preview zoom, keyed the same way as `htmlPreviewViewportState` above.
 // HtmlViewer fully unmounts whenever the workspace tab switches away from this
 // file (e.g. to the Design Files grid) and remounts when the user switches
@@ -1797,6 +1798,9 @@ interface Props {
   projectId: string;
   projectKind: TrackingProjectKind;
   file: ProjectFile;
+  /** One-shot viewport preference supplied by a context-specific open action. */
+  initialPreviewViewport?: PreviewViewportId;
+  initialPreviewViewportNonce?: number;
   liveHtml?: string;
   filesRefreshKey?: number;
   isDeck?: boolean;
@@ -1898,6 +1902,8 @@ export const FileViewer = memo(function FileViewer({
   projectId,
   projectKind,
   file,
+  initialPreviewViewport,
+  initialPreviewViewportNonce,
   liveHtml,
   filesRefreshKey = 0,
   isDeck,
@@ -1987,6 +1993,8 @@ export const FileViewer = memo(function FileViewer({
         projectId={projectId}
         projectKind={projectKind}
         file={file}
+        initialPreviewViewport={initialPreviewViewport}
+        initialPreviewViewportNonce={initialPreviewViewportNonce}
         liveHtml={liveHtml}
         filesRefreshKey={filesRefreshKey}
         isDeck={rendererMatch.renderer.id === 'deck-html'}
@@ -7398,6 +7406,8 @@ function HtmlViewer({
   projectId,
   projectKind,
   file,
+  initialPreviewViewport,
+  initialPreviewViewportNonce,
   liveHtml,
   filesRefreshKey = 0,
   isDeck,
@@ -7433,6 +7443,8 @@ function HtmlViewer({
   projectId: string;
   projectKind: TrackingProjectKind;
   file: ProjectFile;
+  initialPreviewViewport?: PreviewViewportId;
+  initialPreviewViewportNonce?: number;
   liveHtml?: string;
   filesRefreshKey?: number;
   isDeck: boolean;
@@ -7929,7 +7941,10 @@ function HtmlViewer({
     () => htmlPreviewZoomState.get(fileViewportKey)?.zoomMode ?? 'auto',
   );
   const [previewViewport, setPreviewViewportState] = useState<PreviewViewportId>(
-    () => htmlPreviewViewportState.get(fileViewportKey) ?? 'desktop',
+    () => initialPreviewViewport && initialPreviewViewportNonce != null
+      && htmlPreviewViewportRequestState.get(fileViewportKey) !== initialPreviewViewportNonce
+      ? initialPreviewViewport
+      : htmlPreviewViewportState.get(fileViewportKey) ?? 'desktop',
   );
   const setPreviewViewport = useCallback((viewport: PreviewViewportId) => {
     setPreviewViewportCached(fileViewportKey, viewport);
@@ -7977,7 +7992,16 @@ function HtmlViewer({
   const [templateName, setTemplateName] = useState('');
 
   useEffect(() => {
-    setPreviewViewportState(htmlPreviewViewportState.get(fileViewportKey) ?? 'desktop');
+    const freshViewportRequest = initialPreviewViewport
+      && initialPreviewViewportNonce != null
+      && htmlPreviewViewportRequestState.get(fileViewportKey) !== initialPreviewViewportNonce;
+    if (freshViewportRequest) {
+      htmlPreviewViewportRequestState.set(fileViewportKey, initialPreviewViewportNonce);
+      setPreviewViewportCached(fileViewportKey, initialPreviewViewport);
+      setPreviewViewportState(initialPreviewViewport);
+    } else {
+      setPreviewViewportState(htmlPreviewViewportState.get(fileViewportKey) ?? 'desktop');
+    }
     // Restore this file's last zoom instead of hard-resetting to 100/auto —
     // this effect also fires on every HtmlViewer remount (e.g. switching to
     // the Design Files tab and back), not just on a genuine file change, and
@@ -7987,7 +8011,7 @@ function HtmlViewer({
     const cachedZoom = htmlPreviewZoomState.get(fileViewportKey);
     setZoom(cachedZoom?.zoom ?? 100);
     setZoomMode(cachedZoom?.zoomMode ?? 'auto');
-  }, [fileViewportKey]);
+  }, [fileViewportKey, initialPreviewViewport, initialPreviewViewportNonce]);
   const [templateDescription, setTemplateDescription] = useState('');
   const [templateSaveError, setTemplateSaveError] = useState<string | null>(null);
   const [deployment, setDeployment] = useState<WebDeploymentInfo | null>(null);

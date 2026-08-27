@@ -107,6 +107,7 @@ import {
   resolveLocalizedText,
   type ChatSessionMode,
   type MobileEditorMetadata,
+  type MobileScreenRecord,
   type InstalledPluginRecord,
   type LocalizedText,
   type WorkspaceCollabContext,
@@ -377,6 +378,7 @@ interface Props {
   mobileEditorMetadata?: MobileEditorMetadata;
   onMobileEditorManifestChange?: (metadata: MobileEditorMetadata) => void | Promise<void>;
   onMobileEditorOpenFile?: (name: string) => void;
+  mobilePreviewRequest?: { name: string; nonce: number } | null;
 }
 
 function noop(): void {}
@@ -1384,6 +1386,7 @@ export function FileWorkspace({
   mobileEditorMetadata,
   onMobileEditorManifestChange,
   onMobileEditorOpenFile,
+  mobilePreviewRequest,
 }: Props) {
   const refreshFilesWithoutResult = useCallback(async () => {
     await onRefreshFiles();
@@ -1450,6 +1453,7 @@ export function FileWorkspace({
 
   const [showLibraryPicker, setShowLibraryPicker] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [mobileEditorSelectedScreen, setMobileEditorSelectedScreen] = useState<MobileScreenRecord | null>(null);
   // The folder the Design Files panel is currently viewing (synced via
   // onCurrentDirChange). New files — uploads, pastes, sketches, dropped files —
   // are created under this folder instead of the project root.
@@ -1793,6 +1797,7 @@ export function FileWorkspace({
     browserTabSequenceRef.current = 0;
     setLauncherOpen(false);
     sketchPreloadInFlightRef.current.clear();
+    setMobileEditorSelectedScreen(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -3370,6 +3375,8 @@ export function FileWorkspace({
       projectId={projectId}
       projectKind={projectKind}
       file={file}
+      initialPreviewViewport={mobilePreviewRequest?.name === file.name ? 'mobile' : undefined}
+      initialPreviewViewportNonce={mobilePreviewRequest?.name === file.name ? mobilePreviewRequest.nonce : undefined}
       filesRefreshKey={filesRefreshKey}
       isDeck={isDeck}
       streaming={streaming}
@@ -3426,6 +3433,17 @@ export function FileWorkspace({
         kind: 'design-system',
         label: t('dsManager.tabDesignSystem'),
         tabId: activeTab,
+      };
+    }
+    if (activeTab === MOBILE_CANVAS_TAB && mobileEditorProject) {
+      const selected = mobileEditorSelectedScreen;
+      return {
+        id: selected ? `mobile-screen:${selected.id}` : 'workspace:mobile-canvas',
+        kind: 'mobile-screen',
+        label: selected?.name ?? 'Mobile Canvas',
+        tabId: MOBILE_CANVAS_TAB,
+        ...(selected?.file ? { path: selected.file } : {}),
+        ...(selected ? { title: `${selected.name} · Mobile screen` } : {}),
       };
     }
     if (designFilesTabActive) {
@@ -3505,6 +3523,8 @@ export function FileWorkspace({
     designFilesTabIsEmpty,
     designFilesTabActive,
     designSystemProject,
+    mobileEditorProject,
+    mobileEditorSelectedScreen,
     resolvedDir,
     t,
     uploadDir,
@@ -4333,6 +4353,7 @@ export function FileWorkspace({
             metadata={mobileEditorMetadata}
             workspaceContext={workspaceContext}
             viewerOnly={viewerOnly}
+            onSelectScreen={setMobileEditorSelectedScreen}
             onManifestChange={onMobileEditorManifestChange}
             onOpenFile={(name) => onMobileEditorOpenFile?.(name) ?? openFile(name)}
             onOpenSourceFiles={() => setPersistedActive(DESIGN_FILES_TAB)}

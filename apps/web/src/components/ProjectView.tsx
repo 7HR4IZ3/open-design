@@ -2562,6 +2562,10 @@ export function ProjectView({
   // include a nonce so re-clicking the same name after the user closed the
   // tab still focuses it.
   const [openRequest, setOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  // A mobile-canvas file open also seeds the HTML viewer with its mobile
+  // viewport. The nonce makes this a one-shot navigation request rather than
+  // a permanent viewport override.
+  const [mobilePreviewRequest, setMobilePreviewRequest] = useState<{ name: string; nonce: number } | null>(null);
   const handleMobileEditorManifestChange = useCallback((mobileEditor: NonNullable<ProjectMetadata['mobileEditor']>) => {
     const baseMetadata: ProjectMetadata = {
       kind: project.metadata?.kind ?? 'other',
@@ -11782,7 +11786,9 @@ export function ProjectView({
           mobileEditorMetadata={currentProject.metadata?.mobileEditor}
           onMobileEditorManifestChange={handleMobileEditorManifestChange}
           onMobileEditorOpenFile={(name) => {
-            setOpenRequest({ name, nonce: Date.now() });
+            const nonce = Date.now();
+            setMobilePreviewRequest({ name, nonce });
+            setOpenRequest({ name, nonce });
           }}
           projectKind={projectKindFromMetadataToTrackingOrLegacyDefault(currentProject.metadata)}
           rootDirName={(() => {
@@ -11803,6 +11809,7 @@ export function ProjectView({
           commentQueueOnSend={commentQueueOnSend}
           commentSendDisabled={currentConversationQueueDisabled}
           openRequest={openRequest}
+          mobilePreviewRequest={mobilePreviewRequest}
           browserOpenRequest={browserOpenRequest}
           pinnedBrowserTabId={projectIsProgrammaticBrandExtraction ? BRAND_BROWSER_TAB_ID : null}
           shareRequest={shareRequest}

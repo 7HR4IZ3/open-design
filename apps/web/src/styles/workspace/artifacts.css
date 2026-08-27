@@ -3795,6 +3795,237 @@ button.agent-group-rescan-btn:hover:not(:disabled) {
 @media (prefers-reduced-motion: reduce) {
   .mobile-canvas-world, .mobile-flow-device { transition: none; animation: none !important; }
 }
+
+/* Mobile canvas v2 ---------------------------------------------------
+   Keep the canvas in the same visual system as the workspace chrome: quiet
+   28px actions, 12px copy, subtle separators, and one uninterrupted canvas.
+   The screen rail and inspector live above/below the canvas instead of
+   permanently taking two side columns. */
+.mobile-editor {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+}
+.mobile-editor-toolbar {
+  min-height: 44px;
+  padding: 6px 12px;
+  background: var(--bg);
+}
+.mobile-editor-heading { gap: 8px; }
+.mobile-editor-heading strong { color: var(--text-strong); font-size: 12px; font-weight: 600; }
+.mobile-editor-heading span:last-child { font-size: 11px; }
+.mobile-editor-icon {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+.mobile-editor-actions { gap: 2px; min-width: 0; }
+.mobile-editor-button,
+.mobile-canvas-controls button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.mobile-editor-button:hover:not(:disabled),
+.mobile-canvas-controls button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+.mobile-editor-button.primary {
+  border-color: var(--text-strong);
+  background: var(--text-strong);
+  color: var(--bg-panel);
+}
+.mobile-editor-button.primary:hover:not(:disabled) { background: var(--text); color: var(--bg-panel); }
+.mobile-editor-action-label { white-space: nowrap; }
+.mobile-editor-layout {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.mobile-screen-rail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 52px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+.mobile-screen-rail-title {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 1px;
+  min-width: 54px;
+  padding: 2px 9px 2px 2px;
+  border-right: 1px solid var(--border);
+  font-size: 10px;
+}
+.mobile-screen-list-item {
+  flex: 0 0 auto;
+  width: 156px;
+  min-height: 38px;
+  margin: 0;
+  padding: 4px 8px;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.mobile-screen-list-item:hover,
+.mobile-screen-list-item.selected {
+  border-color: transparent;
+  background: var(--bg-subtle);
+}
+.mobile-screen-list-preview {
+  width: 25px;
+  height: 31px;
+  border-color: var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-panel);
+}
+.mobile-screen-list-preview span { width: 13px; height: 2px; background: var(--text-faint); }
+.mobile-screen-list-item.selected .mobile-screen-list-preview { border-color: var(--text); }
+.mobile-screen-list-copy { gap: 2px; }
+.mobile-screen-list-copy strong { font-size: 12px; font-weight: 550; }
+.mobile-screen-list-copy small { font-size: 10px; }
+.mobile-screen-empty { padding: 4px 8px; }
+.mobile-canvas-shell { grid-row: 2; }
+.mobile-canvas-toolbar {
+  min-height: 38px;
+  padding: 4px 10px;
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+.mobile-canvas-toolbar > span { color: var(--text-strong); font-weight: 550; }
+.mobile-selection-id { font-size: 10px; }
+.mobile-canvas-controls { gap: 1px; }
+.mobile-canvas-control-group {
+  padding: 0 3px 0 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.mobile-canvas-controls button { width: 28px; min-width: 28px; padding: 0; }
+.mobile-canvas-controls button.active {
+  border-color: transparent;
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+.mobile-canvas-zoom-group { gap: 1px; padding: 0 3px; border-right: 1px solid var(--border); }
+.mobile-canvas-zoom-group > span { min-width: 36px; font-size: 11px; }
+.mobile-canvas-viewport {
+  background-color: var(--veil-canvas, var(--bg-subtle));
+  background-size: 20px 20px;
+}
+.mobile-canvas-world { will-change: transform; transition: none; }
+.mobile-device-frame {
+  border-radius: 14px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-md);
+  user-select: none;
+}
+.mobile-device-frame.selected {
+  border-color: var(--text-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-strong) 18%, transparent), var(--shadow-md);
+}
+.mobile-device-frame--iphone { border-radius: 24px; background: #121416; }
+.mobile-device-frame--iphone::before {
+  position: absolute;
+  top: 11px;
+  left: 50%;
+  width: 84px;
+  height: 19px;
+  border-radius: 20px;
+  background: #060708;
+  content: '';
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+.mobile-device-frame--iphone .mobile-device-screen { border-radius: 18px; }
+.mobile-device-frame--android { border-radius: 20px; background: #202326; }
+.mobile-device-frame--android::before {
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border: 2px solid #353a40;
+  border-radius: 50%;
+  background: #08090a;
+  content: '';
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+.mobile-device-frame--android .mobile-device-screen { border-radius: 15px; }
+.mobile-device-frame--tablet { border-radius: 11px; background: #25282c; }
+.mobile-device-frame--tablet .mobile-device-screen { border-radius: 6px; }
+.mobile-screen-inspector {
+  grid-row: 3;
+  display: block;
+  max-height: 176px;
+  padding: 8px 12px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  border-left: 0;
+  background: var(--bg);
+}
+.mobile-screen-inspector h3 { margin: 3px 0 2px; font-size: 13px; }
+.mobile-screen-inspector code { padding-bottom: 7px; font-size: 10px; }
+.mobile-inspector-meta { display: inline-grid; margin-right: 16px; padding: 6px 0; border-top: 0; }
+.mobile-inspector-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  gap: 8px;
+  padding: 7px 0;
+}
+.mobile-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 3px;
+}
+.mobile-inspector-actions button { min-height: 28px; }
+.mobile-canvas-minimap {
+  right: 10px;
+  bottom: 10px;
+  width: 156px;
+  height: 98px;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+.mobile-canvas-minimap__label { font-size: 9px; }
+@media (max-width: 900px) {
+  .mobile-editor-action-label { display: none; }
+  .mobile-editor-button { width: 28px; padding: 0; }
+}
+@media (max-width: 640px) {
+  .mobile-editor-toolbar { align-items: center; flex-direction: row; padding: 5px 8px; }
+  .mobile-editor-heading > div span:last-child { display: none; }
+  .mobile-editor-actions { overflow-x: auto; }
+  .mobile-editor-actions .mobile-editor-button { flex: 0 0 28px; }
+  .mobile-screen-rail { min-height: 50px; padding-inline: 8px; }
+  .mobile-screen-list-item { width: 138px; }
+  .mobile-canvas-toolbar { align-items: center; flex-direction: row; padding-inline: 8px; }
+  .mobile-canvas-toolbar > span { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-canvas-controls { max-width: calc(100% - 104px); overflow-x: auto; }
+  .mobile-screen-inspector { max-height: 210px; padding-inline: 9px; }
+  .mobile-inspector-fields { grid-template-columns: repeat(3, minmax(80px, 1fr)); gap: 5px; }
+  .mobile-canvas-minimap { right: 7px; bottom: 7px; width: 126px; height: 80px; }
+}
 .newproj-section { display: flex; flex-direction: column; gap: 6px; }
 /* -------- "Start from" rail (blank-first scenario templates) --------
    Horizontal card rail on the prototype/deck tabs. The Blank card is

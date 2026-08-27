@@ -53,6 +53,7 @@
     "chokidar": "3.6.0",
     "express": "5.2.1",
     "hyperframes": "0.8.1",
+    "just-bash": "3.4.2",
     "jszip": "3.10.1",
     "kiwi-schema": "0.5.0",
     "multer": "2.2.0",

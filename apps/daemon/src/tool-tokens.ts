@@ -18,6 +18,7 @@ export function resolveChatToolTokenTtlMs(inactivityTimeoutMs: number): number {
 export const MEDIA_TASK_WAIT_TOOL_ENDPOINT = '/api/media/tasks/:id/wait';
 export const HYPERFRAMES_SCAFFOLD_TOOL_ENDPOINT = '/api/tools/media/hyperframes/scaffold';
 export const PROJECT_EXPORT_TOOL_ENDPOINT = '/api/projects/:id/export/:format';
+export const HOSTED_BASH_TOOL_ENDPOINT = '/api/tools/bash';
 
 export const CHAT_TOOL_ENDPOINTS = [
   '/api/tools/live-artifacts/create',
@@ -33,6 +34,7 @@ export const CHAT_TOOL_ENDPOINTS = [
   PROJECT_EXPORT_TOOL_ENDPOINT,
   '/api/tools/library/search',
   '/api/tools/library/apply',
+  HOSTED_BASH_TOOL_ENDPOINT,
 ] as const;
 
 export const CHAT_TOOL_OPERATIONS = [
@@ -48,6 +50,7 @@ export const CHAT_TOOL_OPERATIONS = [
   'project:export',
   'library:search',
   'library:apply',
+  'bash:execute',
 ] as const;
 
 export type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});

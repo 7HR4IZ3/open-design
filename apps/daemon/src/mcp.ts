@@ -91,7 +91,7 @@ interface ProjectPayload { project?: ProjectSummary; id?: string; name?: string;
 interface ActiveContext { active?: boolean; projectId?: string; projectName?: string | null; fileName?: string | null; ageMs?: number | null }
 type ResolvedProject = { id: string; name: string; source: 'uuid' | 'id' | 'exact' | 'slug' | 'substring' };
 interface ProjectListCache { baseUrl: string; t: number; list: ProjectSummary[] }
-interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; skills?: string[]; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
+interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; command?: unknown; cwd?: unknown; stdin?: unknown; timeoutMs?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; skills?: string[]; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
 interface ProjectFileBundleEntry { name: string; mime: string; size: number | null; content: string | null; binary: boolean }
 interface BundleInput { project: ProjectPayload | ProjectSummary; entry: string; files: ProjectFileBundleEntry[]; truncated: boolean; skippedFileCount?: number; active: ActiveContext | null; resolved?: ResolvedProject | null }
 interface ErrorWithCode { message?: string; code?: string; cause?: { code?: string } }
@@ -625,6 +625,36 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
     annotations: { ...WRITE_ANNOTATIONS, title: 'Write OpenDesign project file' },
+  },
+  {
+    name: 'run_bash',
+    description:
+      'Execute a shell script in OpenDesign\'s project-scoped hosted just-bash workspace. Use this for shell/file operations when the host has no usable disk. The workspace is in-memory, shared across calls for this project until the daemon restarts, and cannot access native processes, the host filesystem, or the network.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: PROJECT_ARG,
+        command: {
+          type: 'string',
+          description: 'Bash-compatible script. Use heredocs or printf for multiline file writes.',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Virtual working directory under /workspace. Defaults to /workspace.',
+        },
+        stdin: {
+          type: 'string',
+          description: 'Optional text to expose on the script stdin.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Execution timeout in milliseconds, from 1 to 30000. Defaults to 30000.',
+        },
+      },
+      required: ['command'],
+      additionalProperties: false,
+    },
+    annotations: { ...WRITE_ANNOTATIONS, title: 'Run hosted shell script' },
   },
   {
     name: 'delete_file',
@@ -1839,6 +1869,10 @@ export async function runMcpStdio(options: RunMcpOptions): Promise<void> {
         ' - write_file(path, content) to overwrite or freshly create any',
         '    project file when an ArtifactManifest is not required.',
         '    Use this to iterate on a file create_artifact already wrote.',
+        ' - run_bash(command) to execute supported shell syntax in the',
+        '    project-scoped in-memory workspace. It cannot run host binaries,',
+        '    access host disk, or access the network; state survives between',
+        '    calls until the daemon restarts.',
         ' - delete_file(path) to remove one project file (nested paths ok).',
         ' - delete_project(project, confirm:true) for irreversible project',
         '    removal — requires explicit project + confirm:true.',
@@ -2048,6 +2082,7 @@ const PROJECT_OR_RUN_TOOLS = new Set([
   'search_files',
   'get_artifact',
   'write_file',
+  'run_bash',
   'delete_file',
   'delete_project',
   'create_project',
@@ -2232,6 +2267,8 @@ async function handleMcpToolCall(
         return await createArtifact(baseUrl, args, headers);
       case 'write_file':
         return await writeFile(baseUrl, args, headers);
+      case 'run_bash':
+        return await runBash(baseUrl, args, headers);
       case 'delete_file':
         return await deleteFile(baseUrl, args, headers);
       case 'delete_project':
@@ -2310,6 +2347,33 @@ async function writeFile(
   }
   const json = (await resp.json()) as JsonObject;
   return ok(withActiveEcho(json, active, resolved));
+}
+
+async function runBash(
+  baseUrl: string,
+  args: McpArgs,
+  headers?: Record<string, string>,
+) {
+  const { id, resolved, active } = await resolveProjectArg(baseUrl, args.project, headers);
+  requireString(args.command, 'command');
+  if (args.cwd !== undefined) requireString(args.cwd, 'cwd');
+  if (args.stdin !== undefined) requireString(args.stdin, 'stdin');
+  if (args.timeoutMs !== undefined && (typeof args.timeoutMs !== 'number' || !Number.isFinite(args.timeoutMs))) {
+    throw new Error('timeoutMs must be a finite number');
+  }
+  const url = `${baseUrl}/api/projects/${encodeURIComponent(id)}/bash`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({
+      command: args.command,
+      ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+      ...(args.stdin === undefined ? {} : { stdin: args.stdin }),
+      ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }),
+    }),
+  });
+  if (!resp.ok) return errorResult(await formatDaemonError(resp, url));
+  return ok(withActiveEcho(await resp.json() as JsonObject, active, resolved));
 }
 
 async function deleteFile(

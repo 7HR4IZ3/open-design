@@ -30,7 +30,44 @@ import { buildZip } from '../runtime/zip';
 import { Icon } from './Icon';
 
 const DEFAULT_EDITOR = { x: 36, y: 36, zoom: 0.72 };
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 1.5;
+const MOBILE_GRID_SIZE = 8;
 export const MOBILE_CANVAS_TAB = '__mobile_canvas__';
+
+type CanvasInteractionMode = 'select' | 'pan';
+type CanvasSize = { width: number; height: number };
+
+function clampZoom(value: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+}
+
+function snapCanvasPosition(value: number, enabled: boolean): number {
+  return enabled ? Math.round(value / MOBILE_GRID_SIZE) * MOBILE_GRID_SIZE : value;
+}
+
+function mobileScreensBounds(screens: readonly MobileScreenRecord[]) {
+  if (screens.length === 0) return { minX: 0, minY: 0, maxX: 390, maxY: 844 };
+  return screens.reduce(
+    (bounds, screen) => ({
+      minX: Math.min(bounds.minX, screen.x),
+      minY: Math.min(bounds.minY, screen.y),
+      maxX: Math.max(bounds.maxX, screen.x + screen.width),
+      maxY: Math.max(bounds.maxY, screen.y + screen.height),
+    }),
+    { minX: screens[0]!.x, minY: screens[0]!.y, maxX: screens[0]!.x + screens[0]!.width, maxY: screens[0]!.y + screens[0]!.height },
+  );
+}
+
+function mobileViewportWorldBounds(editor: MobileEditorMetadata['editor'], size: CanvasSize) {
+  const zoom = Math.max(editor.zoom, 0.01);
+  return {
+    minX: -editor.x / zoom,
+    minY: -editor.y / zoom,
+    maxX: (size.width - editor.x) / zoom,
+    maxY: (size.height - editor.y) / zoom,
+  };
+}
 
 export interface MobileCanvasEditorProps {
   projectId: string;
@@ -192,6 +229,98 @@ function buildMobileSpa(screens: readonly MobileScreenRecord[], sources: Record<
 })();</script></body></html>`;
 }
 
+function MobileCanvasMinimap({
+  screens,
+  editor,
+  canvasSize,
+  selectedScreenId,
+  onCenter,
+}: {
+  screens: readonly MobileScreenRecord[];
+  editor: MobileEditorMetadata['editor'];
+  canvasSize: CanvasSize;
+  selectedScreenId: string | null;
+  onCenter: (point: { x: number; y: number }) => void;
+}) {
+  const minimapWidth = 180;
+  const minimapHeight = 112;
+  const padding = 8;
+  const screenBounds = mobileScreensBounds(screens);
+  const viewBounds = mobileViewportWorldBounds(editor, {
+    width: canvasSize.width || 720,
+    height: canvasSize.height || 560,
+  });
+  const bounds = {
+    minX: Math.min(screenBounds.minX, viewBounds.minX),
+    minY: Math.min(screenBounds.minY, viewBounds.minY),
+    maxX: Math.max(screenBounds.maxX, viewBounds.maxX),
+    maxY: Math.max(screenBounds.maxY, viewBounds.maxY),
+  };
+  const worldWidth = Math.max(bounds.maxX - bounds.minX, 1);
+  const worldHeight = Math.max(bounds.maxY - bounds.minY, 1);
+  const scale = Math.min(
+    (minimapWidth - padding * 2) / worldWidth,
+    (minimapHeight - padding * 2) / worldHeight,
+  );
+  const offsetX = (minimapWidth - worldWidth * scale) / 2;
+  const offsetY = (minimapHeight - worldHeight * scale) / 2;
+  const mapPoint = (value: number, axis: 'x' | 'y') =>
+    (value - (axis === 'x' ? bounds.minX : bounds.minY)) * scale
+    + (axis === 'x' ? offsetX : offsetY);
+  const mapSize = (value: number) => Math.max(2, value * scale);
+  const centerFromPointer = (clientX: number, clientY: number, rect: DOMRect) => {
+    onCenter({
+      x: bounds.minX + ((clientX - rect.left) / rect.width) * worldWidth,
+      y: bounds.minY + ((clientY - rect.top) / rect.height) * worldHeight,
+    });
+  };
+
+  return (
+    <div
+      className="mobile-canvas-minimap"
+      role="button"
+      tabIndex={0}
+      aria-label="Canvas minimap"
+      data-testid="mobile-canvas-minimap"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => centerFromPointer(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect())}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onCenter({
+          x: bounds.minX + worldWidth / 2,
+          y: bounds.minY + worldHeight / 2,
+        });
+      }}
+    >
+      <span className="mobile-canvas-minimap__label">Map</span>
+      {screens.map((screen) => (
+        <span
+          key={screen.id}
+          className={`mobile-canvas-minimap__screen${screen.id === selectedScreenId ? ' is-selected' : ''}`}
+          aria-hidden="true"
+          style={{
+            left: mapPoint(screen.x, 'x'),
+            top: mapPoint(screen.y, 'y'),
+            width: mapSize(screen.width),
+            height: mapSize(screen.height),
+          }}
+        />
+      ))}
+      <span
+        className="mobile-canvas-minimap__viewport"
+        aria-hidden="true"
+        style={{
+          left: mapPoint(viewBounds.minX, 'x'),
+          top: mapPoint(viewBounds.minY, 'y'),
+          width: mapSize(viewBounds.maxX - viewBounds.minX),
+          height: mapSize(viewBounds.maxY - viewBounds.minY),
+        }}
+      />
+    </div>
+  );
+}
+
 export function MobileCanvasEditor({
   projectId,
   files,
@@ -215,6 +344,10 @@ export function MobileCanvasEditor({
     [availableNames, metadata?.screens],
   );
   const [editor, setEditor] = useState(metadata?.editor ?? DEFAULT_EDITOR);
+  const [internalSelectedScreenId, setInternalSelectedScreenId] = useState<string | null>(
+    metadata?.selectedScreenId ?? null,
+  );
+  const effectiveSelectedScreenId = selectedScreenId ?? internalSelectedScreenId;
   const [sources, setSources] = useState<Record<string, string>>({});
   const [loadingSources, setLoadingSources] = useState(true);
   const [flowPreviewId, setFlowPreviewId] = useState<string | null>(null);
@@ -231,15 +364,58 @@ export function MobileCanvasEditor({
   const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const lastManifestFileSignatureRef = useRef<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const canvasShellRef = useRef<HTMLDivElement | null>(null);
+  const canvasViewportRef = useRef<HTMLDivElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 });
+  const [interactionMode, setInteractionMode] = useState<CanvasInteractionMode>('select');
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     setEditor(metadata?.editor ?? DEFAULT_EDITOR);
   }, [metadata?.editor]);
 
   useEffect(() => {
+    if (selectedScreenId !== undefined) return;
+    setInternalSelectedScreenId((current) => {
+      if (current && screens.some((screen) => screen.id === current)) return current;
+      return metadata?.selectedScreenId && screens.some((screen) => screen.id === metadata.selectedScreenId)
+        ? metadata.selectedScreenId
+        : screens[0]?.id ?? null;
+    });
+  }, [metadata?.selectedScreenId, screens, selectedScreenId]);
+
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    if (!viewport) return;
+    const measure = () => {
+      const rect = viewport.getBoundingClientRect();
+      setCanvasSize((current) => current.width === rect.width && current.height === rect.height
+        ? current
+        : { width: rect.width, height: rect.height });
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(viewport);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === canvasShellRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
     if (!onManifestChange || htmlFiles.length === 0) return;
-    const nextSelected = selectedScreenId && screens.some((screen) => screen.id === selectedScreenId)
-      ? selectedScreenId
+    const nextSelected = effectiveSelectedScreenId && screens.some((screen) => screen.id === effectiveSelectedScreenId)
+      ? effectiveSelectedScreenId
       : metadata?.selectedScreenId && screens.some((screen) => screen.id === metadata.selectedScreenId)
         ? metadata.selectedScreenId
         : screens[0]?.id ?? null;
@@ -259,7 +435,7 @@ export function MobileCanvasEditor({
         workspaceContext,
       );
     }
-  }, [editor, htmlFiles.length, metadata, onManifestChange, projectId, screens, selectedScreenId, viewerOnly, workspaceContext]);
+  }, [editor, effectiveSelectedScreenId, htmlFiles.length, metadata, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
 
   useEffect(() => {
     if (bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;
@@ -295,11 +471,12 @@ export function MobileCanvasEditor({
   }, [projectId, screens, workspaceContext]);
 
   const selectScreen = useCallback((screen: MobileScreenRecord | null) => {
+    if (selectedScreenId === undefined) setInternalSelectedScreenId(screen?.id ?? null);
     onSelectScreen?.(screen);
     if (screen) {
       setEditor((current) => ({ ...current, x: Math.max(24, 420 - screen.x * current.zoom), y: Math.max(24, 220 - screen.y * current.zoom) }));
     }
-  }, [onSelectScreen]);
+  }, [onSelectScreen, selectedScreenId]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -323,7 +500,7 @@ export function MobileCanvasEditor({
     return () => window.removeEventListener('message', handleMessage);
   }, [flowPreviewId, screens, selectScreen]);
 
-  const persist = useCallback((nextScreens: MobileScreenRecord[], nextSelected = selectedScreenId ?? null, nextEditor = editor) => {
+  const persist = useCallback((nextScreens: MobileScreenRecord[], nextSelected = effectiveSelectedScreenId ?? null, nextEditor = editor) => {
     const next = manifestFor(metadata, nextScreens, nextSelected, nextEditor);
     lastPersistedSignatureRef.current = screenSignature(next);
     void onManifestChange?.(next);
@@ -337,7 +514,7 @@ export function MobileCanvasEditor({
         workspaceContext,
       );
     }
-  }, [editor, metadata, onManifestChange, projectId, selectedScreenId, viewerOnly, workspaceContext]);
+  }, [editor, effectiveSelectedScreenId, metadata, onManifestChange, projectId, viewerOnly, workspaceContext]);
 
   const createScreen = useCallback(async () => {
     if (viewerOnly || screens.length >= MOBILE_MAX_SCREENS) return;
@@ -363,7 +540,7 @@ export function MobileCanvasEditor({
   }, [files, onRefreshFiles, persist, projectId, screens, selectScreen, viewerOnly, workspaceContext]);
 
   const renameScreen = useCallback(async () => {
-    const selected = screens.find((screen) => screen.id === selectedScreenId);
+    const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId);
     if (!selected || viewerOnly) return;
     const name = window.prompt('Rename screen', selected.name)?.trim();
     if (!name || name === selected.name) return;
@@ -380,10 +557,10 @@ export function MobileCanvasEditor({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not rename that screen.');
     } finally { setBusy(null); }
-  }, [files, onRefreshFiles, persist, projectId, screens, selectedScreenId, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, files, onRefreshFiles, persist, projectId, screens, viewerOnly, workspaceContext]);
 
   const duplicateScreen = useCallback(async () => {
-    const selected = screens.find((screen) => screen.id === selectedScreenId);
+    const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId);
     if (!selected || viewerOnly || screens.length >= MOBILE_MAX_SCREENS) return;
     const name = `${selected.name} copy`;
     const fileBase = `screens/${slugify(name)}`;
@@ -403,10 +580,10 @@ export function MobileCanvasEditor({
       await onRefreshFiles?.();
     }
     setBusy(null);
-  }, [files, onRefreshFiles, persist, projectId, screens, selectScreen, selectedScreenId, sources, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, files, onRefreshFiles, persist, projectId, screens, selectScreen, sources, viewerOnly, workspaceContext]);
 
   const deleteScreen = useCallback(async () => {
-    const selected = screens.find((screen) => screen.id === selectedScreenId);
+    const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId);
     if (!selected || viewerOnly || screens.length <= 1) return;
     if (!window.confirm(`Delete “${selected.name}” and remove its HTML file from this project?`)) return;
     setBusy('delete');
@@ -420,24 +597,69 @@ export function MobileCanvasEditor({
       await onRefreshFiles?.();
     }
     setBusy(null);
-  }, [onRefreshFiles, persist, projectId, screens, selectScreen, selectedScreenId, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, onRefreshFiles, persist, projectId, screens, selectScreen, viewerOnly, workspaceContext]);
 
   const reorder = useCallback((direction: -1 | 1) => {
     if (viewerOnly) return;
-    const index = screens.findIndex((screen) => screen.id === selectedScreenId);
+    const index = screens.findIndex((screen) => screen.id === effectiveSelectedScreenId);
     const target = index + direction;
     if (index < 0 || target < 0 || target >= screens.length) return;
     const next = [...screens];
     [next[index], next[target]] = [next[target]!, next[index]!];
     persist(next.map((screen, order) => ({ ...screen, order, updatedAt: now() })));
-  }, [persist, screens, selectedScreenId, viewerOnly]);
+  }, [effectiveSelectedScreenId, persist, screens, viewerOnly]);
 
-  const selected = screens.find((screen) => screen.id === selectedScreenId) ?? screens[0] ?? null;
+  const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId) ?? screens[0] ?? null;
   const flowScreen = screens.find((screen) => screen.id === flowPreviewId) ?? screens[0] ?? null;
   const flowHtml = flowScreen ? sources[flowScreen.id] ?? '' : '';
   const zoomLabel = `${Math.round(editor.zoom * 100)}%`;
+  const zoomBy = useCallback((delta: number) => {
+    setEditor((current) => ({ ...current, zoom: clampZoom(current.zoom + delta) }));
+  }, []);
+  const centerOnWorldPoint = useCallback((point: { x: number; y: number }) => {
+    const width = canvasSize.width || 720;
+    const height = canvasSize.height || 560;
+    setEditor((current) => ({
+      ...current,
+      x: width / 2 - point.x * current.zoom,
+      y: height / 2 - point.y * current.zoom,
+    }));
+  }, [canvasSize.height, canvasSize.width]);
+  const centerSelected = useCallback(() => {
+    if (!selected) return;
+    centerOnWorldPoint({
+      x: selected.x + selected.width / 2,
+      y: selected.y + selected.height / 2,
+    });
+  }, [centerOnWorldPoint, selected]);
+  const fitAllScreens = useCallback(() => {
+    const width = canvasSize.width || 720;
+    const height = canvasSize.height || 560;
+    const bounds = mobileScreensBounds(screens);
+    const padding = 80;
+    const zoom = clampZoom(Math.min(
+      (width - padding * 2) / Math.max(bounds.maxX - bounds.minX, 1),
+      (height - padding * 2) / Math.max(bounds.maxY - bounds.minY, 1),
+    ));
+    setEditor({
+      zoom,
+      x: width / 2 - (bounds.minX + (bounds.maxX - bounds.minX) / 2) * zoom,
+      y: height / 2 - (bounds.minY + (bounds.maxY - bounds.minY) / 2) * zoom,
+    });
+  }, [canvasSize.height, canvasSize.width, screens]);
+  const toggleFullscreen = useCallback(async () => {
+    const shell = canvasShellRef.current;
+    if (!shell) return;
+    try {
+      if (document.fullscreenElement === shell) await document.exitFullscreen();
+      else if (shell.requestFullscreen) await shell.requestFullscreen();
+      else setError('Fullscreen is not available in this browser.');
+    } catch {
+      setError('Could not change fullscreen mode.');
+    }
+  }, []);
   const updateSelectedScreen = useCallback((patch: Partial<MobileScreenRecord>) => {
-    const current = screens.find((screen) => screen.id === selectedScreenId);
+    const current = screens.find((screen) => screen.id === effectiveSelectedScreenId);
     if (!current || viewerOnly) return;
     const nextCurrent = { ...current, ...patch, updatedAt: now() };
     const otherScreens = screens.filter((screen) => screen.id !== current.id);
@@ -446,7 +668,7 @@ export function MobileCanvasEditor({
       screens.map((screen) => screen.id === current.id ? { ...nextCurrent, ...placement } : screen),
       current.id,
     );
-  }, [persist, screens, selectedScreenId, viewerOnly]);
+  }, [effectiveSelectedScreenId, persist, screens, viewerOnly]);
 
   const exportHtmlScreens = useCallback(async () => {
     setExportBusy('html');
@@ -487,10 +709,10 @@ export function MobileCanvasEditor({
     setError(null);
     triggerMobileDownload(buildZip([
       { path: 'index.html', content: buildMobileSpa(screens, sources) },
-      { path: 'mobile-manifest.json', content: manifestDocument(projectId, manifestFor(metadata, screens, selectedScreenId ?? null, editor)) },
+      { path: 'mobile-manifest.json', content: manifestDocument(projectId, manifestFor(metadata, screens, effectiveSelectedScreenId ?? null, editor)) },
     ]), 'mobile-prototype-spa.zip');
     setExportOpen(false);
-  }, [editor, metadata, projectId, screens, selectedScreenId, sources]);
+  }, [editor, effectiveSelectedScreenId, metadata, projectId, screens, sources]);
 
   const importFiles = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.target.files ?? []);
@@ -538,6 +760,7 @@ export function MobileCanvasEditor({
           <button type="button" className="mobile-editor-button subtle" onClick={() => importInputRef.current?.click()} disabled={viewerOnly || busy !== null}><Icon name="import" size={14} /> Import</button>
           <button type="button" className="mobile-editor-button subtle" onClick={onOpenSourceFiles} disabled={!onOpenSourceFiles}><Icon name="file-code" size={14} /> Source files</button>
           <button type="button" className="mobile-editor-button subtle" onClick={() => setFlowPreviewId(flowScreen?.id ?? null)} disabled={!flowScreen}><Icon name="play" size={14} /> Preview flow</button>
+          <button type="button" className="mobile-editor-button subtle" onClick={() => selected && onOpenFile?.(selected.file)} disabled={!selected || !onOpenFile}><Icon name="edit" size={14} /> Open as design file</button>
           <div className="mobile-export-control">
             <button type="button" className="mobile-editor-button subtle" onClick={() => setExportOpen((open) => !open)} disabled={exportBusy !== null}><Icon name="download" size={14} /> Export <Icon name="chevron-down" size={12} /></button>
             {exportOpen ? <div className="mobile-export-menu" role="menu"><button type="button" role="menuitem" onClick={() => void exportHtmlScreens()}><Icon name="file-code" size={13} /> HTML screens (.zip)</button><button type="button" role="menuitem" onClick={() => void exportPngScreens()}><Icon name="image" size={13} /> PNG screens (.zip)</button><button type="button" role="menuitem" onClick={exportSpa}><Icon name="globe" size={13} /> Runnable SPA (.zip)</button></div> : null}
@@ -557,20 +780,31 @@ export function MobileCanvasEditor({
           ))}
           {screens.length === 0 && !loadingSources ? <div className="mobile-screen-empty">Your first screen will appear here.</div> : null}
         </aside>
-        <div className="mobile-canvas-shell">
+        <div ref={canvasShellRef} className={`mobile-canvas-shell${isFullscreen ? ' is-fullscreen' : ''}`}>
           <div className="mobile-canvas-toolbar">
             <span>{selected ? <><b>{selected.name}</b><span className="mobile-selection-id">{selected.id.slice(0, 8)}</span></> : 'Select a screen'}</span>
             <div className="mobile-canvas-controls">
-              <button type="button" onClick={() => setEditor((current) => ({ ...current, zoom: Math.min(1.5, current.zoom + 0.1) }))} aria-label="Zoom in"><Icon name="zoom-in" size={14} /></button>
-              <span>{zoomLabel}</span>
-              <button type="button" onClick={() => setEditor((current) => ({ ...current, zoom: Math.max(0.35, current.zoom - 0.1) }))} aria-label="Zoom out"><Icon name="zoom-out" size={14} /></button>
-              <button type="button" onClick={() => setEditor(DEFAULT_EDITOR)}>Reset view</button>
+              <div className="mobile-canvas-control-group" role="group" aria-label="Canvas mode">
+                <button type="button" className={interactionMode === 'select' ? 'active' : ''} onClick={() => setInteractionMode('select')} aria-pressed={interactionMode === 'select'} title="Select mode" aria-label="Select mode"><Icon name="artboard" size={14} /></button>
+                <button type="button" className={interactionMode === 'pan' ? 'active' : ''} onClick={() => setInteractionMode('pan')} aria-pressed={interactionMode === 'pan'} title="Pan mode" aria-label="Pan mode"><Icon name="orbit" size={14} /></button>
+              </div>
+              <button type="button" className={snapToGrid ? 'active' : ''} onClick={() => setSnapToGrid((enabled) => !enabled)} aria-pressed={snapToGrid} title={`Snap to ${MOBILE_GRID_SIZE}px grid`} aria-label={`Snap to ${MOBILE_GRID_SIZE}px grid`}><Icon name="grid" size={14} /></button>
+              <button type="button" onClick={centerSelected} disabled={!selected} title="Center selected screen" aria-label="Center selected screen"><Icon name="artboard" size={14} /></button>
+              <button type="button" onClick={fitAllScreens} title="Fit all screens" aria-label="Fit all screens"><Icon name="maximize" size={14} /></button>
+              <span className="mobile-canvas-zoom-group" role="group" aria-label="Canvas zoom">
+                <button type="button" onClick={() => zoomBy(-0.1)} aria-label="Zoom out" title="Zoom out"><Icon name="zoom-out" size={14} /></button>
+                <span>{zoomLabel}</span>
+                <button type="button" onClick={() => zoomBy(0.1)} aria-label="Zoom in" title="Zoom in"><Icon name="zoom-in" size={14} /></button>
+              </span>
+              <button type="button" onClick={() => setEditor(DEFAULT_EDITOR)} title="Reset view" aria-label="Reset view"><Icon name="refresh" size={14} /></button>
+              <button type="button" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}><Icon name={isFullscreen ? 'minimize' : 'maximize'} size={14} /></button>
             </div>
           </div>
           <div
-            className="mobile-canvas-viewport"
+            ref={canvasViewportRef}
+            className={`mobile-canvas-viewport${interactionMode === 'pan' ? ' is-pan-mode' : ''}`}
             onPointerDown={(event) => {
-              if (event.target !== event.currentTarget) return;
+              if (interactionMode !== 'pan' && event.target !== event.currentTarget) return;
               panRef.current = { x: editor.x, y: editor.y, startX: event.clientX, startY: event.clientY };
               event.currentTarget.setPointerCapture(event.pointerId);
             }}
@@ -591,9 +825,10 @@ export function MobileCanvasEditor({
                     key={screen.id}
                     className={`mobile-device-frame${selected?.id === screen.id ? ' selected' : ''}`}
                     style={{ left: dragPositions[screen.id]?.x ?? screen.x, top: dragPositions[screen.id]?.y ?? screen.y, width: screen.width + 24 }}
-                    onClick={() => selectScreen(screen)}
+                    onClick={() => { if (interactionMode === 'select') selectScreen(screen); }}
                     onPointerDown={(event) => {
                       event.stopPropagation();
+                      if (interactionMode !== 'select') return;
                       selectScreen(screen);
                       if (viewerOnly) return;
                       screenDragRef.current = { id: screen.id, x: screen.x, y: screen.y, startX: event.clientX, startY: event.clientY };
@@ -602,13 +837,13 @@ export function MobileCanvasEditor({
                     onPointerMove={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
-                      setDragPositions((current) => ({ ...current, [screen.id]: { x: Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), y: Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom) } }));
+                      setDragPositions((current) => ({ ...current, [screen.id]: { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom), snapToGrid) } }));
                     }}
                     onPointerUp={(event) => {
                       const drag = screenDragRef.current;
                       if (!drag || drag.id !== screen.id) return;
                       screenDragRef.current = null;
-                      const nextPosition = { x: Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), y: Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom) };
+                      const nextPosition = { x: snapCanvasPosition(Math.max(0, drag.x + (event.clientX - drag.startX) / editor.zoom), snapToGrid), y: snapCanvasPosition(Math.max(0, drag.y + (event.clientY - drag.startY) / editor.zoom), snapToGrid) };
                       const moved = Math.abs(event.clientX - drag.startX) > 2 || Math.abs(event.clientY - drag.startY) > 2;
                       const candidate = { ...screen, ...nextPosition };
                       setDragPositions((current) => { const next = { ...current }; delete next[screen.id]; return next; });
@@ -633,6 +868,13 @@ export function MobileCanvasEditor({
                 );
               })}
             </div>
+            <MobileCanvasMinimap
+              screens={screens}
+              editor={editor}
+              canvasSize={canvasSize}
+              selectedScreenId={selected?.id ?? null}
+              onCenter={centerOnWorldPoint}
+            />
           </div>
         </div>
         <aside className="mobile-screen-inspector" aria-label="Selected screen actions">

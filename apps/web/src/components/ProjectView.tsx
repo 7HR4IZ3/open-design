@@ -312,7 +312,6 @@ import {
   type BrowserOpenRequest,
   type FileRefreshResult,
 } from './FileWorkspace';
-import { MobileScreenCanvas } from './MobileScreenCanvas';
 import {
   type PluginFolderAgentAction,
 } from './design-files/pluginFolderActions';
@@ -2563,6 +2562,18 @@ export function ProjectView({
   // include a nonce so re-clicking the same name after the user closed the
   // tab still focuses it.
   const [openRequest, setOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const handleMobileEditorManifestChange = useCallback((mobileEditor: NonNullable<ProjectMetadata['mobileEditor']>) => {
+    const baseMetadata: ProjectMetadata = {
+      kind: project.metadata?.kind ?? 'other',
+      ...project.metadata,
+    };
+    const metadata: ProjectMetadata = {
+      ...baseMetadata,
+      mobileEditor,
+    };
+    onProjectChange({ ...project, metadata });
+    void patchProject(project.id, { metadata }, projectRunWorkspaceContext);
+  }, [onProjectChange, project, projectRunWorkspaceContext]);
   const [browserOpenRequest, setBrowserOpenRequest] = useState<BrowserOpenRequest | null>(null);
   // Like `openRequest`, but additionally asks the preview workspace to open the
   // file's Share/Export menu. Drives the "Share" next-step action: it reuses the
@@ -11756,19 +11767,6 @@ export function ProjectView({
             onBlur={handleChatResizeBlur}
           />
         ) : null}
-        {isMobileEditorProject ? (
-          <MobileScreenCanvas
-            projectId={project.id}
-            files={projectFiles}
-            viewerOnly={Boolean(projectMutationReadOnly)}
-            workspaceContext={projectRunWorkspaceContext}
-            onRefreshFiles={refreshProjectFiles}
-            onActiveContextChange={handleActiveWorkspaceContextChange}
-            onWorkspaceContextsChange={handleWorkspaceContextsChange}
-            focusMode={workspaceFocused}
-            onFocusModeChange={setWorkspaceFocused}
-          />
-        ) : (
         <FileWorkspace
           projectId={project.id}
           projectName={currentProject.name}
@@ -11780,6 +11778,12 @@ export function ProjectView({
               : readonlyNoticeText
           }
           fileSyncBadge={fileSyncBadge}
+          mobileEditorProject={isMobileEditorProject}
+          mobileEditorMetadata={currentProject.metadata?.mobileEditor}
+          onMobileEditorManifestChange={handleMobileEditorManifestChange}
+          onMobileEditorOpenFile={(name) => {
+            setOpenRequest({ name, nonce: Date.now() });
+          }}
           projectKind={projectKindFromMetadataToTrackingOrLegacyDefault(currentProject.metadata)}
           rootDirName={(() => {
             const baseDir = currentProject.metadata?.baseDir;
@@ -11875,7 +11879,6 @@ export function ProjectView({
           onLaunchTerminalAuth={handleLaunchAntigravityOauth}
           conversationId={activeConversationId}
         />
-        )}
       </div>
       {contextPluginDetails ? (
         <PluginDetailsModal

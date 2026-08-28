@@ -87,10 +87,16 @@ FROM ${RUNTIME_IMAGE}
 ARG CODEX_VERSION=0.149.1
 ARG OPENCODE_VERSION=1.18.23
 
+# npm 12 blocks dependency lifecycle scripts by default. OpenCode's package
+# uses its postinstall to replace the placeholder launcher with the
+# platform-specific binary, so approve only that known package.
 RUN apk add --no-cache tini poppler-utils bash git libc6-compat && \
+    npm config set allow-scripts=opencode-ai --location=user && \
     npm install --global --no-update-notifier --no-fund --omit=dev \
       "@openai/codex@${CODEX_VERSION}" \
       "opencode-ai@${OPENCODE_VERSION}" && \
+    command -v codex && codex --version && \
+    command -v opencode && opencode --version && \
     npm cache clean --force && \
     addgroup -S -g 1001 open-design && \
     adduser -S -D -H -u 1001 -G open-design open-design

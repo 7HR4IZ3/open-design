@@ -112,6 +112,11 @@ CODEX_AUTH_FILE=/etc/secrets/codex-auth.json
 OPENCODE_AUTH_FILE=/etc/secrets/opencode-auth.json
 ```
 
+In a Render deployment, **local agent** means local to the Render container:
+the browser cannot inspect Codex or OpenCode installations on your laptop. To
+use CLIs installed on your own computer, run the OpenDesign daemon locally (or
+use the Linux Docker mount configuration below) and open that local instance.
+
 To make the free Render service user-scoped and restart-safe, run the
 Supabase migrations `0001_hosted_persistence_foundation.sql` and
 `0002_daemon_postgres_metadata.sql` once, then add these Render environment

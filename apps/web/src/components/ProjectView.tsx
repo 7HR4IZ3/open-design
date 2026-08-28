@@ -2594,16 +2594,23 @@ export function ProjectView({
     }
 
     const pendingMetadata = mobileManifestPendingMetadataRef.current;
-    mobileManifestProjectRef.current = pendingMetadata
-      ? {
-          ...project,
-          metadata: {
-            kind: project.metadata?.kind ?? pendingMetadata.kind ?? 'other',
-            ...project.metadata,
-            mobileEditor: pendingMetadata.mobileEditor,
-          },
-        }
-      : project;
+    if (!pendingMetadata) {
+      mobileManifestProjectRef.current = project;
+      return;
+    }
+    if (project.metadata?.mobileEditor === pendingMetadata.mobileEditor) {
+      mobileManifestPendingMetadataRef.current = null;
+      mobileManifestProjectRef.current = project;
+      return;
+    }
+    mobileManifestProjectRef.current = {
+      ...project,
+      metadata: {
+        kind: project.metadata?.kind ?? pendingMetadata.kind ?? 'other',
+        ...project.metadata,
+        mobileEditor: pendingMetadata.mobileEditor,
+      },
+    };
   }, [project]);
 
   const handleMobileEditorManifestChange = useCallback((
@@ -2628,9 +2635,6 @@ export function ProjectView({
       .catch(() => {})
       .then(async () => {
         await patchProject(project.id, { metadata }, projectRunWorkspaceContext);
-        if (mobileManifestProjectRef.current.metadata === metadata) {
-          mobileManifestPendingMetadataRef.current = null;
-        }
       })
       .catch(() => {});
     return mobileManifestWriteQueueRef.current;

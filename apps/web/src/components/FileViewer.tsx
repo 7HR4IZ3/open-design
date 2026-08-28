@@ -7411,6 +7411,33 @@ function srcDocLoadRequiresFreshParseOnReturnToVisible(state: {
   return state.loadedWhileDocumentHidden && state.srcDocIsActiveTransport && state.isDeck;
 }
 
+function HtmlPreviewStatus({
+  title,
+  detail,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  detail: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="viewer-status-card" role={onAction ? 'alert' : 'status'}>
+      <span className="viewer-status-card__icon" aria-hidden="true">
+        <Icon name="file-code" size={18} />
+      </span>
+      <strong>{title}</strong>
+      <span>{detail}</span>
+      {onAction && actionLabel ? (
+        <button type="button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function HtmlViewer({
   projectId,
   projectKind,
@@ -7899,6 +7926,7 @@ function HtmlViewer({
   ));
   const initialSource = liveHtml ?? initialSourceSnapshot?.source ?? null;
   const [source, setSource] = useState<string | null>(initialSource);
+  const [sourceLoadError, setSourceLoadError] = useState(false);
   const [routingSource, setRoutingSource] = useState<string | null>(initialSource);
   const srcDocPreviewBaseIdentity =
     `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}`;
@@ -9048,6 +9076,7 @@ function HtmlViewer({
     // closed before this render commits so no frame can briefly expose source,
     // publication, deployment, or edit state proven under the prior scope.
     setSource(null);
+    setSourceLoadError(false);
     setRoutingSource(null);
     setRoutingSourceIdentity(null);
     setServerPoweredPreviewRequired(false);
@@ -9565,11 +9594,13 @@ function HtmlViewer({
     // Workspace witness resolves, which reruns this effect with scoped URL and
     // headers. Only an explicit daemon `unbound` result receives the local key.
     if (projectResourceReadBlocked) return;
+    setSourceLoadError(false);
     const sourceFileKey = currentSourceIdentity;
     if (liveHtml !== undefined) {
       sourceFileKeyRef.current = sourceFileKey;
       sourceEverLoadedRef.current = true;
       sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
+      setSourceLoadError(false);
       setSource(liveHtml);
       setRoutingSource(liveHtml);
       setRoutingSourceIdentity(sourceFileKey);
@@ -9593,6 +9624,7 @@ function HtmlViewer({
       setRoutingSource(cachedSource);
       setRoutingSourceIdentity(cachedSource === null ? null : sourceFileKey);
       setServerPoweredPreviewRequired(false);
+      setSourceLoadError(false);
       sourceRef.current = cachedSource;
       if (cachedSource !== null) {
         sourceEverLoadedRef.current = true;
@@ -9699,7 +9731,8 @@ function HtmlViewer({
       if (text == null) {
         if (shouldDeferPassivePreviewSource) {
           sourceEverLoadedRef.current = true;
-      sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
+          sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
+          setSourceLoadError(false);
           setRoutingSource('');
           setRoutingSourceIdentity(sourceFileKey);
           setServerPoweredPreviewRequired(false);
@@ -9722,6 +9755,7 @@ function HtmlViewer({
           snap.projectId === projectId &&
           snap.fileName === file.name
         ) {
+          setSourceLoadError(false);
           setSource(snap.source);
           setRoutingSource(snap.source);
           setRoutingSourceIdentity(sourceFileKey);
@@ -9733,6 +9767,19 @@ function HtmlViewer({
           // a later normal failed load on the original file (PR #4652
           // third-pass review, Codex P2 finding).
           prevSourceBeforeReloadRef.current = null;
+        } else {
+          // A settled 404/network failure must leave the viewer in an
+          // explicit state. Leaving source null keeps the initial skeleton
+          // mounted forever and makes a failed file read look like a blank
+          // canvas. Empty text is reserved for a real zero-byte file.
+          sourceEverLoadedRef.current = true;
+          sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
+          setSourceLoadError(true);
+          setRoutingSource('');
+          setRoutingSourceIdentity(sourceFileKey);
+          setServerPoweredPreviewRequired(false);
+          sourceRef.current = '';
+          setSource('');
         }
         return;
       }
@@ -10622,6 +10669,7 @@ function HtmlViewer({
     // iframe when a reload snapshot was non-null at switch time (PR #4652
     // third-pass review, PerishCode finding).
     sourceEverLoadedRef.current = sourceLoadedKeysRef.current.has(sourceLoadedFileKey);
+    setSourceLoadError(false);
     lastGoodSourceForRoutingRef.current = null;
     prevSourceBeforeReloadRef.current = null;
   }, [projectId, file.name, sourceLoadedFileKey]);
@@ -15721,6 +15769,9 @@ function HtmlViewer({
     return t('fileViewer.deployLinkPreparingLabel');
   };
   const initialPreviewLoading = source === null && !sourceEverLoadedRef.current;
+  const previewSourceUnavailable = mode === 'preview' && sourceLoadError;
+  const previewSourceIsEmpty =
+    mode === 'preview' && source !== null && source.trim().length === 0;
   const sourceModeLoading = mode === 'source' && source === null;
   const boardAvailable = mode === 'preview' && source !== null;
   const showPreviewToolbarControls = mode === 'preview';
@@ -17195,6 +17246,21 @@ function HtmlViewer({
           <FileViewerLoadingSkeleton />
         ) : (
           <>
+            {previewSourceUnavailable ? (
+              <HtmlPreviewStatus
+                title={t('fileViewer.previewLoadFailedTitle')}
+                detail={t('fileViewer.previewLoadFailedDetail')}
+                actionLabel={t('fileViewer.reload')}
+                onAction={reloadHtmlPreview}
+              />
+            ) : previewSourceIsEmpty ? (
+              <HtmlPreviewStatus
+                title={t('fileViewer.emptyHtmlPreviewTitle')}
+                detail={t('fileViewer.emptyHtmlPreviewDetail')}
+                actionLabel={t('fileViewer.source')}
+                onAction={() => setMode('source')}
+              />
+            ) : (
             <div
             hidden={mode !== 'preview'}
             aria-hidden={mode !== 'preview' ? true : undefined}
@@ -17732,6 +17798,7 @@ function HtmlViewer({
               />
             ) : null}
             </div>
+            )}
             {mode !== 'preview' ? (
               sourceModeLoading ? (
                 <div className="viewer-empty">{t('fileViewer.loading')}</div>

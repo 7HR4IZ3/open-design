@@ -3848,6 +3848,10 @@ export interface Dict {
   'fileViewer.presentationMeta': string;
   'fileViewer.spreadsheetMeta': string;
   'fileViewer.previewUnavailable': string;
+  'fileViewer.previewLoadFailedTitle': string;
+  'fileViewer.previewLoadFailedDetail': string;
+  'fileViewer.emptyHtmlPreviewTitle': string;
+  'fileViewer.emptyHtmlPreviewDetail': string;
   'fileViewer.download': string;
   'fileViewer.open': string;
   'fileViewer.imageMeta': string;

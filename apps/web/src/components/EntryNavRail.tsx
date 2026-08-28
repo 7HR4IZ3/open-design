@@ -96,6 +96,7 @@ import {
   workspaceAnalyticsDimensions,
 } from '../analytics/workspace';
 import { WorkbenchCampaignBadge } from './WorkbenchCampaignBadge';
+import { useHostedAuth } from '../auth/HostedAuthContext';
 
 const REPO_URL = 'https://github.com/nexu-io/open-design';
 const GITHUB_HELP_URL = `${REPO_URL}/issues/new`;
@@ -560,6 +561,7 @@ export function EntryTopRightCluster({
 }: EntryTopRightClusterProps) {
   const { t } = useI18n();
   const analytics = useAnalytics();
+  const hostedAuth = useHostedAuth();
   const workspaceDimensions = workspaceAnalyticsDimensions(context);
 
   const isTeam = Boolean(context) && context!.workspaceType === 'team';
@@ -754,7 +756,12 @@ export function EntryTopRightCluster({
     });
   }
 
-  if ((!leadingSlot && !context) || typeof document === 'undefined') return null;
+  // Hosted Supabase sessions mount their account capsule at the shell gate so
+  // it can use Supabase identity/profile data. Do not also render the legacy
+  // Vela account capsule if a daemon happens to return an ambient context.
+  if (hostedAuth.enabled || ((!leadingSlot && !context) || typeof document === 'undefined')) {
+    return null;
+  }
 
   return (
     <>

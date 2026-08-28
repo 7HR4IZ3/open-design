@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import { Button } from '@open-design/components';
 import { HostedAuthGate } from './auth/HostedAuthGate';
+import { HOSTED_OPEN_SETTINGS_EVENT } from './auth/HostedAccountMenu';
 import { reportAgentDetectDiagnostics } from './analytics/agent-detect';
 import { useAnalytics } from './analytics/provider';
 import {
@@ -4716,6 +4717,15 @@ function AppInner() {
     setSettingsHighlight(opts?.highlight ?? null);
     navigate({ kind: 'home', view: 'settings' });
   }, [identityScopeKey]);
+
+  // Hosted Supabase accounts use the same account menu as the cloud shell,
+  // but their menu is mounted outside App so it remains available on every
+  // route. Bridge its Settings action into the existing app settings surface.
+  useEffect(() => {
+    const onHostedSettings = () => openSettings();
+    window.addEventListener(HOSTED_OPEN_SETTINGS_EVENT, onHostedSettings);
+    return () => window.removeEventListener(HOSTED_OPEN_SETTINGS_EVENT, onHostedSettings);
+  }, [openSettings]);
 
   // Entry point from the failed-run AMR nudge: open Settings on the execution
   // section and flag the AMR agent card for a one-shot scroll-into-view +

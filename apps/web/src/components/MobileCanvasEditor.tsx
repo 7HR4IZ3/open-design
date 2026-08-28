@@ -84,6 +84,8 @@ export interface MobileCanvasEditorProps {
   onOpenFile?: (name: string) => void;
   onOpenSourceFiles?: () => void;
   onRefreshFiles?: () => Promise<void> | void;
+  /** True once the parent has accepted an authoritative file snapshot. */
+  filesReady?: boolean;
 }
 
 function now(): number {
@@ -337,6 +339,25 @@ function MobileCanvasMinimap({
   );
 }
 
+function MobileDeviceStatus({
+  title,
+  detail,
+  onRetry,
+}: {
+  title: string;
+  detail: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="mobile-device-status" role={onRetry ? 'alert' : 'status'}>
+      <span className="mobile-device-status__icon" aria-hidden="true"><Icon name="file-code" size={18} /></span>
+      <strong>{title}</strong>
+      <span>{detail}</span>
+      {onRetry ? <button type="button" onClick={onRetry}>Retry</button> : null}
+    </div>
+  );
+}
+
 export function MobileCanvasEditor({
   projectId,
   files,
@@ -349,6 +370,7 @@ export function MobileCanvasEditor({
   onOpenFile,
   onOpenSourceFiles,
   onRefreshFiles,
+  filesReady = files.length > 0,
 }: MobileCanvasEditorProps) {
   const htmlFiles = useMemo(
     () => files.filter((file) => file.kind === 'html' || /\.html?$/i.test(file.name)),
@@ -385,10 +407,14 @@ export function MobileCanvasEditor({
     } as ProjectMetadata['mobileEditor'];
   }, [canonicalManifest, canonicalManifestLoaded, metadata]);
 
-  const reconciledScreens = useMemo(
-    () => reconcileMobileScreenRecords(mobileMetadataSource?.screens ?? [], availableNames),
-    [availableNames, mobileMetadataSource?.screens],
-  );
+  const reconciledScreens = useMemo(() => {
+    const manifestScreens = mobileMetadataSource?.screens ?? [];
+    // Keep a canonical manifest visible while the parent is still accepting
+    // its first authoritative file snapshot. Filtering against an empty,
+    // transitional file list made a healthy project flash as "0 screens".
+    if (!filesReady && manifestScreens.length > 0) return manifestScreens;
+    return reconcileMobileScreenRecords(manifestScreens, availableNames);
+  }, [availableNames, filesReady, mobileMetadataSource?.screens]);
   const [localScreens, setLocalScreens] = useState<MobileScreenRecord[] | null>(null);
   const screens = localScreens ?? reconciledScreens;
   const [editor, setEditor] = useState(mobileMetadataSource?.editor ?? DEFAULT_EDITOR);
@@ -397,6 +423,8 @@ export function MobileCanvasEditor({
   );
   const effectiveSelectedScreenId = selectedScreenId ?? internalSelectedScreenId;
   const [sources, setSources] = useState<Record<string, string>>({});
+  const [sourceErrors, setSourceErrors] = useState<Record<string, string>>({});
+  const [sourceRetryNonce, setSourceRetryNonce] = useState(0);
   const [previewBaseHrefs, setPreviewBaseHrefs] = useState<Record<string, string>>({});
   const [loadingSources, setLoadingSources] = useState(true);
   const [flowPreviewId, setFlowPreviewId] = useState<string | null>(null);
@@ -584,7 +612,10 @@ export function MobileCanvasEditor({
   }, [effectiveSelectedScreenId, htmlFiles.length, mobileMetadataSource, onManifestChange, projectId, viewerOnly, workspaceContext]);
 
   useEffect(() => {
-    if (bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;
+    // Never create a placeholder while the parent is still loading the
+    // project inventory: an agent can be writing real screens at the same
+    // time, and the placeholder would race those writes.
+    if (!filesReady || bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;
     bootstrappedProjectRef.current = projectId;
     setBusy('create');
     void writeProjectTextFile(
@@ -597,24 +628,44 @@ export function MobileCanvasEditor({
       if (!file) setError('Could not create the first mobile screen.');
       await onRefreshFiles?.();
     }).finally(() => setBusy(null));
-  }, [htmlFiles.length, onRefreshFiles, projectId, viewerOnly, workspaceContext]);
+  }, [filesReady, htmlFiles.length, onRefreshFiles, projectId, viewerOnly, workspaceContext]);
 
   useEffect(() => {
     let cancelled = false;
     setLoadingSources(true);
-    void Promise.all(screens.map(async (screen) => {
-      const html = await fetchProjectFileText(projectId, screen.file, {
-        cache: 'no-store',
-        workspaceContext,
-      });
-      return [screen.id, html ?? ''] as const;
-    })).then((entries) => {
+    setSourceErrors({});
+    const loadSources = async () => {
+      const entries = await Promise.all(screens.map(async (screen) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const html = await fetchProjectFileText(projectId, screen.file, {
+            cache: 'no-store',
+            workspaceContext,
+          });
+          if (html !== null) return { id: screen.id, html, error: null };
+          if (attempt < 2) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 350 * (attempt + 1));
+            });
+          }
+        }
+        return {
+          id: screen.id,
+          html: '',
+          error: 'This screen file is not available yet.',
+        };
+      }));
       if (cancelled) return;
-      setSources(Object.fromEntries(entries));
+      setSources(Object.fromEntries(entries.map((entry) => [entry.id, entry.html])));
+      setSourceErrors(Object.fromEntries(
+        entries
+          .filter((entry): entry is typeof entry & { error: string } => entry.error !== null)
+          .map((entry) => [entry.id, entry.error]),
+      ));
       setLoadingSources(false);
-    });
+    };
+    void loadSources();
     return () => { cancelled = true; };
-  }, [projectId, screens, workspaceContext]);
+  }, [projectId, screens, sourceRetryNonce, workspaceContext]);
 
   useEffect(() => {
     // The mobile canvas uses srcDoc documents, so relative stylesheets,
@@ -1080,9 +1131,11 @@ export function MobileCanvasEditor({
           >
             <div className="mobile-canvas-world" style={{ transform: `translate(${editor.x}px, ${editor.y}px) scale(${editor.zoom})` }}>
               {screens.map((screen) => {
-                const html = sources[screen.id] ?? '';
+                const html = sources[screen.id];
+                const sourceError = sourceErrors[screen.id];
+                const hasHtml = typeof html === 'string' && html.trim().length > 0;
                 const baseHref = previewBaseHrefFor(screen);
-                const srcDoc = html
+                const srcDoc = hasHtml
                   ? buildSrcdoc(
                     htmlWithMobileRouteBridge(html, screen.id),
                     baseHref ? { baseHref } : undefined,

@@ -1,3 +1,4 @@
+/* Canonical mobile manifest adapter. The legacy canvas reads this shape for migration only. */
 export const MOBILE_SCREEN_MANIFEST_PATH = '.od/mobile-manifest.json' as const;
 export const MOBILE_SCREEN_LEGACY_MANIFEST_PATH = 'screens/manifest.json' as const;
 export const MOBILE_SCREEN_MANIFEST_SCHEMA = 'open-design.mobile-manifest.v1' as const;
@@ -23,6 +24,8 @@ export interface MobileScreenManifest {
   projectId?: string;
   updatedAt: number;
   screens: MobileScreen[];
+  editor?: { x: number; y: number; zoom: number };
+  selectedScreenId?: string | null;
 }
 
 export const DEFAULT_MOBILE_SCREEN_WIDTH = 390;
@@ -71,6 +74,18 @@ function finitePositive(value: unknown, fallback: number): number {
 
 function finitePosition(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeEditor(value: unknown): { x: number; y: number; zoom: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    x: finitePosition(record.x),
+    y: finitePosition(record.y),
+    zoom: finitePositive(record.zoom, 1),
+  };
 }
 
 function normalizeScreen(value: unknown, index: number): MobileScreen | null {
@@ -131,6 +146,13 @@ export function parseMobileScreenManifest(value: string | null): MobileScreenMan
         seenPaths.add(screen.path);
         return true;
       });
+    const editor = normalizeEditor(record.editor);
+    const requestedSelection = typeof record.selectedScreenId === 'string'
+      ? record.selectedScreenId.trim()
+      : '';
+    const selectedScreenId = requestedSelection && screens.some((screen) => screen.id === requestedSelection)
+      ? requestedSelection
+      : null;
     return {
       schema: MOBILE_SCREEN_MANIFEST_SCHEMA,
       ...(typeof record.projectId === 'string' && record.projectId.trim()
@@ -140,6 +162,8 @@ export function parseMobileScreenManifest(value: string | null): MobileScreenMan
         ? record.updatedAt
         : Date.now(),
       screens,
+      editor,
+      selectedScreenId,
     };
   } catch {
     return null;
@@ -149,12 +173,21 @@ export function parseMobileScreenManifest(value: string | null): MobileScreenMan
 export function createMobileScreenManifest(
   projectId: string,
   screens: MobileScreen[] = [],
+  options: {
+    editor?: { x: number; y: number; zoom: number };
+    selectedScreenId?: string | null;
+  } = {},
 ): MobileScreenManifest {
+  const selectedScreenId = options.selectedScreenId && screens.some((screen) => screen.id === options.selectedScreenId)
+    ? options.selectedScreenId
+    : null;
   return {
     schema: MOBILE_SCREEN_MANIFEST_SCHEMA,
     projectId,
     updatedAt: Date.now(),
     screens,
+    editor: options.editor ?? { x: 0, y: 0, zoom: 1 },
+    selectedScreenId,
   };
 }
 
@@ -177,7 +210,8 @@ export function serializeMobileScreenManifest(manifest: MobileScreenManifest): s
       createdAt: screen.createdAt ?? updatedAt,
       updatedAt,
     })),
-    editor: { x: 0, y: 0, zoom: 1 },
+    editor: manifest.editor ?? { x: 0, y: 0, zoom: 1 },
+    selectedScreenId: manifest.selectedScreenId ?? null,
     updatedAt,
   }, null, 2)}\n`;
 }

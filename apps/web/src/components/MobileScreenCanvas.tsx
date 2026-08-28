@@ -29,7 +29,6 @@ import {
   MOBILE_SCREEN_LEGACY_MANIFEST_PATH,
   mobileScreenNameFromPath,
   parseMobileScreenManifest,
-  serializeLegacyMobileScreenManifest,
   serializeMobileScreenManifest,
   slugifyMobileScreenName,
   starterMobileScreenHtml,
@@ -130,7 +129,10 @@ export function MobileScreenCanvas({
   const activeScreen = screens.find((screen) => screen.id === activeScreenId) ?? null;
 
   const writeManifest = useCallback(async (nextScreens: MobileScreen[]) => {
-    const next = createMobileScreenManifest(projectId, nextScreens);
+    const next = createMobileScreenManifest(projectId, nextScreens, {
+      editor: { x: pan.x, y: pan.y, zoom },
+      selectedScreenId: activeScreenId,
+    });
     const saved = await writeProjectTextFile(
       projectId,
       MOBILE_SCREEN_MANIFEST_PATH,
@@ -139,17 +141,9 @@ export function MobileScreenCanvas({
       workspaceContext,
     );
     if (!saved) throw new Error('Could not save the mobile screen manifest');
-    const legacySaved = await writeProjectTextFile(
-      projectId,
-      MOBILE_SCREEN_LEGACY_MANIFEST_PATH,
-      serializeLegacyMobileScreenManifest(next),
-      undefined,
-      workspaceContext,
-    );
-    if (!legacySaved) throw new Error('Could not save the screen compatibility manifest');
     manifestRef.current = next;
     setManifest(next);
-  }, [projectId, workspaceContext]);
+  }, [activeScreenId, pan.x, pan.y, projectId, workspaceContext, zoom]);
 
   useEffect(() => {
     let cancelled = false;
@@ -169,6 +163,10 @@ export function MobileScreenCanvas({
       const parsed = parseMobileScreenManifest(text ?? legacyText);
       manifestRef.current = parsed;
       setManifest(parsed);
+      if (parsed?.editor) {
+        setPan({ x: parsed.editor.x, y: parsed.editor.y });
+        setZoom(parsed.editor.zoom);
+      }
       setManifestLoaded(true);
     });
     return () => { cancelled = true; };
@@ -185,9 +183,12 @@ export function MobileScreenCanvas({
     const storageKey = `${ACTIVE_MOBILE_SCREEN_KEY_PREFIX}${projectId}`;
     let stored: string | null = null;
     try { stored = window.localStorage.getItem(storageKey); } catch { /* ignore */ }
+    const persistedId = manifest?.selectedScreenId ?? null;
     const nextId = stored && screens.some((screen) => screen.id === stored)
       ? stored
-      : screens[0]?.id ?? null;
+      : persistedId && screens.some((screen) => screen.id === persistedId)
+        ? persistedId
+        : screens[0]?.id ?? null;
     setActiveScreenId(nextId);
   }, [projectId, screens]);
 
@@ -207,11 +208,14 @@ export function MobileScreenCanvas({
   }, [onActiveContextChange, projectId]);
 
   const updateScreens = useCallback((nextScreens: MobileScreen[]) => {
-    const next = createMobileScreenManifest(projectId, nextScreens);
+    const next = createMobileScreenManifest(projectId, nextScreens, {
+      editor: { x: pan.x, y: pan.y, zoom },
+      selectedScreenId: activeScreenId,
+    });
     manifestRef.current = next;
     setManifest(next);
     return nextScreens;
-  }, [projectId]);
+  }, [activeScreenId, pan.x, pan.y, projectId, zoom]);
 
   const handleCanvasPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;

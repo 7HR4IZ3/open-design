@@ -32,6 +32,7 @@
 @import './styles/modal-window-drag.css';
 @import './styles/entrance.css';
 @import './styles/home/plugin-marketplace-demo.css';
+@import './styles/mobile.css';
 
 /* Mobile browser ergonomics ---------------------------------------
    Keep these rules last so they can make the existing desktop-density

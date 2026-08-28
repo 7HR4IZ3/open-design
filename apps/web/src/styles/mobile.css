@@ -994,3 +994,146 @@
     display: none;
   }
 }
+
+
+/* Final touch and visibility pass ----------------------------------------
+   These rules are deliberately last: mobile.css is imported after the
+   existing surface styles so every important action remains discoverable and
+   comfortably tappable on a real phone. */
+
+@media (max-width: 820px) {
+  .app .ws-focus-expand,
+  .app .split-chat-collapse,
+  .app .ws-tab-add,
+  .app .ws-tabs-actions .ws-tab-action,
+  .app .df-actions button,
+  .mobile-editor-more,
+  .mobile-editor-new-screen {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .mobile-editor-toolbar {
+    flex-basis: 52px;
+    min-height: 52px;
+    height: 52px;
+    padding-block: 4px;
+  }
+
+  .mobile-editor-actions.is-open .mobile-editor-button {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .mobile-screen-rail {
+    min-height: 60px;
+    max-height: 72px;
+    padding-block: 5px;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--border-strong) 72%, transparent) transparent;
+  }
+
+  .mobile-screen-list-item {
+    min-height: 52px;
+  }
+
+  .mobile-screen-list-copy small {
+    display: block;
+    max-width: 112px;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-canvas-toolbar {
+    flex-basis: 52px;
+    min-height: 52px;
+    height: 52px;
+    padding-block: 4px;
+  }
+
+  .mobile-canvas-controls button {
+    flex-basis: 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .mobile-canvas-orientation,
+  .mobile-canvas-orientation select {
+    min-height: 44px;
+  }
+
+  .mobile-selection-id {
+    display: block;
+    max-width: 24vw;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-canvas-minimap {
+    display: block;
+    right: 10px;
+    bottom: 10px;
+    width: 180px;
+    height: 112px;
+    opacity: .96;
+    z-index: 4;
+  }
+
+  .home-hero__platform-context .home-hero__platform-option,
+  .home-hero__template-option,
+  .home-hero__template-option .home-hero__template-trigger,
+  .home-hero__submit,
+  .home-hero__input-card .composer-mode__trigger,
+  .home-hero__input-card .plus-menu__trigger {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .home-hero__type-tab,
+  .home-hero__type-pill,
+  .home-hero__subtype-chip,
+  .home-hero__rail-chip {
+    min-height: 44px;
+  }
+
+  .home-hero__type-tabs:not(.home-hero__scenario-cards),
+  .home-hero__subtype-row,
+  .home-hero__type-pills-wrap,
+  .home-hero__rail,
+  .mobile-screen-rail,
+  .mobile-canvas-controls {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--border-strong) 72%, transparent) transparent;
+  }
+
+  .home-hero__type-tabs:not(.home-hero__scenario-cards)::-webkit-scrollbar,
+  .home-hero__subtype-row::-webkit-scrollbar,
+  .home-hero__type-pills-wrap::-webkit-scrollbar,
+  .home-hero__rail::-webkit-scrollbar,
+  .mobile-screen-rail::-webkit-scrollbar,
+  .mobile-canvas-controls::-webkit-scrollbar {
+    display: block;
+    height: 4px;
+  }
+
+  .home-hero__type-tabs:not(.home-hero__scenario-cards)::-webkit-scrollbar-thumb,
+  .home-hero__subtype-row::-webkit-scrollbar-thumb,
+  .home-hero__type-pills-wrap::-webkit-scrollbar-thumb,
+  .home-hero__rail::-webkit-scrollbar-thumb,
+  .mobile-screen-rail::-webkit-scrollbar-thumb,
+  .mobile-canvas-controls::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--border-strong) 72%, transparent);
+  }
+}

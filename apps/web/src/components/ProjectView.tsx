@@ -2578,18 +2578,55 @@ export function ProjectView({
   // viewport. The nonce makes this a one-shot navigation request rather than
   // a permanent viewport override.
   const [mobilePreviewRequest, setMobilePreviewRequest] = useState<{ name: string; nonce: number } | null>(null);
-  const handleMobileEditorManifestChange = useCallback((mobileEditor: NonNullable<ProjectMetadata['mobileEditor']>) => {
+  // Mobile canvas edits can arrive several times before the parent project prop
+  // catches up. Keep the latest optimistic project in a ref and serialize
+  // patches so an older closure cannot overwrite a newer manifest.
+  const mobileManifestProjectRef = useRef<Project>(project);
+  const mobileManifestPendingMetadataRef = useRef<ProjectMetadata | null>(null);
+  const mobileManifestWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    if (mobileManifestProjectRef.current.id !== project.id) {
+      mobileManifestProjectRef.current = project;
+      mobileManifestPendingMetadataRef.current = null;
+      mobileManifestWriteQueueRef.current = Promise.resolve();
+      return;
+    }
+
+    const pendingMetadata = mobileManifestPendingMetadataRef.current;
+    mobileManifestProjectRef.current = pendingMetadata
+      ? { ...project, metadata: pendingMetadata }
+      : project;
+  }, [project]);
+
+  const handleMobileEditorManifestChange = useCallback((
+    mobileEditor: NonNullable<ProjectMetadata['mobileEditor']>,
+  ) => {
+    const currentProject = mobileManifestProjectRef.current;
     const baseMetadata: ProjectMetadata = {
-      kind: project.metadata?.kind ?? 'other',
-      ...project.metadata,
+      kind: currentProject.metadata?.kind ?? 'other',
+      ...currentProject.metadata,
     };
     const metadata: ProjectMetadata = {
       ...baseMetadata,
       mobileEditor,
     };
-    onProjectChange({ ...project, metadata });
-    void patchProject(project.id, { metadata }, projectRunWorkspaceContext);
-  }, [onProjectChange, project, projectRunWorkspaceContext]);
+    const nextProject = { ...currentProject, metadata };
+
+    mobileManifestProjectRef.current = nextProject;
+    mobileManifestPendingMetadataRef.current = metadata;
+    onProjectChange(nextProject);
+
+    mobileManifestWriteQueueRef.current = mobileManifestWriteQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        await patchProject(project.id, { metadata }, projectRunWorkspaceContext);
+        if (mobileManifestProjectRef.current.metadata === metadata) {
+          mobileManifestPendingMetadataRef.current = null;
+        }
+      })
+      .catch(() => {});
+  }, [onProjectChange, project.id, projectRunWorkspaceContext]);
   const [browserOpenRequest, setBrowserOpenRequest] = useState<BrowserOpenRequest | null>(null);
   // Like `openRequest`, but additionally asks the preview workspace to open the
   // file's Share/Export menu. Drives the "Share" next-step action: it reuses the

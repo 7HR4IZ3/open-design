@@ -1028,7 +1028,7 @@ export function MobileCanvasEditor({
       <header className="mobile-editor-toolbar">
         <div className="mobile-editor-heading">
           <span className="mobile-editor-icon"><Icon name="smartphone" size={16} /></span>
-          <div><strong>Mobile screens</strong><span>{screens.length} of {MOBILE_MAX_SCREENS} · {MOBILE_MANIFEST_SCHEMA}</span></div>
+          <div><strong>Mobile canvas</strong><span>{screens.length === 1 ? '1 screen' : screens.length + ' screens'} · {canonicalManifestLoaded ? 'Synced' : 'Loading workspace'}</span></div>
         </div>
         <div className="mobile-editor-toolbar-actions">
           <div className={`mobile-editor-actions${actionsOpen ? ' is-open' : ''}`} role={actionsOpen ? 'menu' : undefined}>
@@ -1060,7 +1060,7 @@ export function MobileCanvasEditor({
         </aside>
         <div ref={canvasShellRef} className={`mobile-canvas-shell${isFullscreen ? ' is-fullscreen' : ''}`}>
           <div className="mobile-canvas-toolbar">
-            <span>{selected ? <><b>{selected.name}</b><span className="mobile-selection-id">{selected.id.slice(0, 8)}</span></> : 'Select a screen'}</span>
+            <span title={selected?.file}>{selected ? <b>{selected.name}</b> : 'Select a screen'}</span>
             <div className="mobile-canvas-controls">
               {selected ? (
                 <>
@@ -1137,7 +1137,7 @@ export function MobileCanvasEditor({
                 const baseHref = previewBaseHrefFor(screen);
                 const srcDoc = hasHtml
                   ? buildSrcdoc(
-                    htmlWithMobileRouteBridge(html, screen.id),
+                    htmlWithMobileRouteBridge(html ?? '', screen.id),
                     baseHref ? { baseHref } : undefined,
                   )
                   : '';
@@ -1200,7 +1200,28 @@ export function MobileCanvasEditor({
                   >
                     <div className="mobile-device-chrome"><span>{screen.name}</span><span>{screen.orientation}</span></div>
                     <div className="mobile-device-screen" style={{ width: screen.width, height: screen.height }}>
-                      {html ? <iframe ref={(frame) => { if (frame) frameRefs.current.set(screen.id, frame); else frameRefs.current.delete(screen.id); }} title={`${screen.name} preview`} sandbox="allow-scripts allow-forms" srcDoc={srcDoc} /> : <div className="mobile-device-loading">{loadingSources ? 'Loading…' : 'No HTML source'}</div>}
+                      {loadingSources ? (
+                        <MobileDeviceStatus title="Loading preview" detail="Fetching the latest screen file…" />
+                      ) : sourceError ? (
+                        <MobileDeviceStatus
+                          title="Preview unavailable"
+                          detail={sourceError}
+                          onRetry={() => setSourceRetryNonce((value) => value + 1)}
+                        />
+                      ) : hasHtml ? (
+                        <iframe
+                          ref={(frame) => { if (frame) frameRefs.current.set(screen.id, frame); else frameRefs.current.delete(screen.id); }}
+                          title={screen.name + ' preview'}
+                          sandbox="allow-scripts allow-forms"
+                          srcDoc={srcDoc}
+                        />
+                      ) : (
+                        <MobileDeviceStatus
+                          title="This screen is empty"
+                          detail="Open the source file to add HTML content."
+                          onRetry={() => onOpenFile?.(screen.file)}
+                        />
+                      )}
                     </div>
                   </article>
                 );
@@ -1221,7 +1242,28 @@ export function MobileCanvasEditor({
           <div className="mobile-flow-backdrop" onClick={() => setFlowPreviewId(null)} />
           <div className="mobile-flow-dialog">
             <div className="mobile-flow-header"><div><strong>Flow preview</strong><span>Tap links to move through the experience</span></div><button type="button" onClick={() => setFlowPreviewId(null)} aria-label="Close flow preview"><Icon name="close" size={16} /></button></div>
-            <div key={flowScreen.id} className={`mobile-flow-device transition-${flowScreen.transition ?? 'none'}`}><div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div><div className="mobile-device-screen"><iframe ref={flowFrameRef} title={`${flowScreen.name} flow preview`} sandbox="allow-scripts allow-forms" srcDoc={flowHtml ? buildSrcdoc(htmlWithMobileRouteBridge(flowHtml, flowScreen.id), flowPreviewBaseHref ? { baseHref: flowPreviewBaseHref } : undefined) : ''} /></div></div>
+            <div
+              key={flowScreen.id}
+              className={'mobile-flow-device transition-' + (flowScreen.transition ?? 'none')}
+            >
+              <div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div>
+              <div className="mobile-device-screen">
+                {flowHtml.trim() ? (
+                  <iframe
+                    ref={flowFrameRef}
+                    title={flowScreen.name + ' flow preview'}
+                    sandbox="allow-scripts allow-forms"
+                    srcDoc={buildSrcdoc(htmlWithMobileRouteBridge(flowHtml, flowScreen.id), flowPreviewBaseHref ? { baseHref: flowPreviewBaseHref } : undefined)}
+                  />
+                ) : (
+                  <MobileDeviceStatus
+                    title="Flow preview unavailable"
+                    detail="This screen has no HTML content yet."
+                    onRetry={() => setSourceRetryNonce((value) => value + 1)}
+                  />
+                )}
+              </div>
+            </div>
             <div className="mobile-flow-footer"><span>{screens.findIndex((screen) => screen.id === flowScreen.id) + 1} / {screens.length}</span><div>{screens.map((screen) => <button key={screen.id} type="button" className={screen.id === flowScreen.id ? 'active' : ''} onClick={() => { setFlowPreviewId(screen.id); selectScreen(screen); }}>{screen.name}</button>)}</div></div>
           </div>
         </div>

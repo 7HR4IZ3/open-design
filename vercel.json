@@ -3,5 +3,25 @@
   "buildCommand": "pnpm build:vercel",
   "installCommand": "pnpm install",
   "framework": "nextjs",
-  "outputDirectory": "apps/web/.next"
+  "outputDirectory": "apps/web/.next",
+  "rewrites": [
+    { "source": "/onboarding/:path*", "destination": "/" },
+    { "source": "/projects/:path*", "destination": "/" },
+    { "source": "/design-systems/:path*", "destination": "/" },
+    { "source": "/brands/:path*", "destination": "/" },
+    { "source": "/automations/:path*", "destination": "/" },
+    { "source": "/tasks/:path*", "destination": "/" },
+    { "source": "/plugins/:path*", "destination": "/" },
+    { "source": "/library/:path*", "destination": "/" },
+    { "source": "/integrations/:path*", "destination": "/" },
+    { "source": "/settings/:path*", "destination": "/" },
+    { "source": "/collab-demo/:path*", "destination": "/" },
+    { "source": "/community/:path*", "destination": "/" },
+    { "source": "/drafts/:path*", "destination": "/" },
+    { "source": "/all-projects/:path*", "destination": "/" },
+    { "source": "/members/:path*", "destination": "/" },
+    { "source": "/board/:path*", "destination": "/" },
+    { "source": "/workspace-settings/:path*", "destination": "/" },
+    { "source": "/marketplace/:path*", "destination": "/" }
+  ]
 }

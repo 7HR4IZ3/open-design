@@ -9,8 +9,20 @@ function isTruthy(value: unknown): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
+function isKnownHostedWebOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname.endsWith('.vercel.app') || hostname.endsWith('.onrender.com');
+}
+
+/**
+ * Hosted deployments must use the Supabase gate whenever they are explicitly
+ * configured, and known web-hosted previews opt into the same gate even when
+ * an old deployment omitted the boolean flag. This prevents the legacy local
+ * AMR onboarding route from becoming the only sign-in path on Vercel.
+ */
 export function hostedAuthRequired(): boolean {
-  return isTruthy(process.env.NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED);
+  return isTruthy(process.env.NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED) || isKnownHostedWebOrigin();
 }
 
 export function supabaseBrowserClient(): SupabaseClient | null {

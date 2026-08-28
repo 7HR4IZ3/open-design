@@ -33,6 +33,67 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+.viewer-status-card {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: clamp(32px, 8vw, 72px) 24px;
+  text-align: center;
+  color: var(--text-muted);
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 34%),
+    var(--bg);
+}
+
+.viewer-status-card__icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--bg-panel);
+}
+
+.viewer-status-card strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.viewer-status-card > span:not(.viewer-status-card__icon) {
+  max-width: 360px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.viewer-status-card button {
+  min-height: 32px;
+  margin-top: 4px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--bg-panel);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.viewer-status-card button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.viewer-status-card button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 /* Compact horizontal variant for the upload-failure banner: the message
    sits inline next to a dismiss button so the user can clear the stale
    notice without changing tabs. Issue #786. */

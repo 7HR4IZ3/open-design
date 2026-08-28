@@ -10,12 +10,25 @@ ARG https_proxy
 ARG no_proxy
 ARG NO_PROXY
 
+# Render exposes service environment variables to Docker builds as build
+# arguments. Next.js inlines NEXT_PUBLIC_* values while the web shell is built,
+# so explicitly carry the public auth configuration into this stage. Never add
+# the Supabase service-role key here; it must remain runtime-only.
+ARG NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 ENV http_proxy=${http_proxy}
 ENV https_proxy=${https_proxy}
 ENV no_proxy=${no_proxy}
 ENV NO_PROXY=${NO_PROXY}
+ENV NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED=${NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED}
+ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+ENV NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV CI=true
 
 RUN apk add --no-cache python3 make g++

@@ -23,3 +23,25 @@ test('hosted image explicitly installs and verifies bundled agent CLIs', async (
   assert.match(source, /command -v codex && codex --version/);
   assert.match(source, /command -v opencode && opencode --version/);
 });
+
+test('Docker build carries public hosted-auth configuration into Next.js', async () => {
+  const source = await readFile(dockerfilePath, 'utf8');
+
+  // Render exposes service variables as Docker build args. Without declaring
+  // and exporting these values in the build stage, the static web bundle sees
+  // an empty auth flag and calls the protected daemon before sign-in.
+  for (const key of [
+    'NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  ]) {
+    assert.match(source, new RegExp(`ARG ${key}`));
+    assert.match(source, new RegExp(`ENV ${key}=\\$\\{${key}\\}`));
+  }
+
+  assert.doesNotMatch(
+    source,
+    /ARG SUPABASE_SERVICE_ROLE_KEY|ENV SUPABASE_SERVICE_ROLE_KEY/,
+    'the Supabase service-role key must not enter the web build stage',
+  );
+});

@@ -57,7 +57,52 @@ export interface MobileManifest {
   projectId: string;
   screens: MobileScreenRecord[];
   editor: MobileEditorState;
+  selectedScreenId?: string | null;
   updatedAt: number;
+}
+
+export function parseMobileManifest(
+  value: string | null,
+  expectedProjectId?: string,
+): MobileManifest | null {
+  if (!value) return null;
+  try {
+    return normalizeMobileManifestDocument(JSON.parse(value) as unknown, expectedProjectId);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMobileManifestDocument(
+  value: unknown,
+  expectedProjectId?: string,
+): MobileManifest | null {
+  if (!isObject(value) || value.schema !== MOBILE_MANIFEST_SCHEMA) return null;
+
+  const projectId = normalizedText(value.projectId);
+  if (!projectId || (expectedProjectId && projectId !== expectedProjectId)) return null;
+
+  const screens = normalizeMobileScreenRecords(value.screens);
+  if (screens.length === 0 || screens.length > MOBILE_MAX_SCREENS) return null;
+
+  const editor = normalizeMobileEditorState(value.editor);
+  if (!editor) return null;
+
+  const requestedSelection = value.selectedScreenId == null
+    ? null
+    : normalizedText(value.selectedScreenId);
+  const selectedScreenId = requestedSelection && screens.some((screen) => screen.id === requestedSelection)
+    ? requestedSelection
+    : null;
+
+  return {
+    schema: MOBILE_MANIFEST_SCHEMA,
+    projectId,
+    screens,
+    editor,
+    selectedScreenId,
+    updatedAt: normalizedNonNegativeNumber(value.updatedAt) ?? 0,
+  };
 }
 
 export type MobileScreenMutationAction =
@@ -449,6 +494,15 @@ function normalizedFiniteNumber(value: unknown): number | null {
 function normalizedNonNegativeNumber(value: unknown): number | null {
   const number = normalizedFiniteNumber(value);
   return number !== null && number >= 0 ? number : null;
+}
+
+function normalizeMobileEditorState(value: unknown): MobileEditorState | null {
+  if (!isObject(value)) return null;
+  const x = normalizedFiniteNumber(value.x);
+  const y = normalizedFiniteNumber(value.y);
+  const zoom = normalizedPositiveNumber(value.zoom);
+  if (x === null || y === null || zoom === null) return null;
+  return { x, y, zoom };
 }
 
 function normalizedPositiveNumber(value: unknown): number | null {

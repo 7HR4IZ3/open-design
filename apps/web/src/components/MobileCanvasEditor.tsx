@@ -12,6 +12,7 @@ import {
   MOBILE_MAX_SCREENS,
   findAvailableMobileScreenPosition,
   mobileScreenRecordsOverlap,
+  parseMobileManifest,
   reconcileMobileScreenRecords,
 } from '@open-design/contracts';
 import type { ProjectFile } from '../types';
@@ -89,6 +90,18 @@ function now(): number {
   return Date.now();
 }
 
+function editorFocusedOnScreen(
+  screen: MobileScreenRecord | null,
+  editor: MobileEditorMetadata['editor'],
+): MobileEditorMetadata['editor'] {
+  if (!screen) return editor;
+  return {
+    ...editor,
+    x: Math.max(24, 420 - screen.x * editor.zoom),
+    y: Math.max(24, 220 - screen.y * editor.zoom),
+  };
+}
+
 function slugify(value: string): string {
   return value
     .trim()
@@ -136,6 +149,7 @@ function manifestDocument(projectId: string, metadata: MobileEditorMetadata): st
     projectId,
     screens: metadata.screens,
     editor: metadata.editor,
+    selectedScreenId: metadata.selectedScreenId ?? null,
     updatedAt: metadata.updatedAt,
   };
   return `${JSON.stringify(document, null, 2)}\n`;
@@ -341,15 +355,45 @@ export function MobileCanvasEditor({
     [files],
   );
   const availableNames = useMemo(() => htmlFiles.map((file) => file.name), [htmlFiles]);
+  const [canonicalManifest, setCanonicalManifest] = useState<MobileManifest | null>(null);
+  const [canonicalManifestLoaded, setCanonicalManifestLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanonicalManifest(null);
+    setCanonicalManifestLoaded(false);
+    void fetchProjectFileText(projectId, MOBILE_MANIFEST_FILE, {
+      workspaceContext,
+      cache: 'no-store',
+    }).then((value) => {
+      if (cancelled) return;
+      setCanonicalManifest(parseMobileManifest(value, projectId));
+      setCanonicalManifestLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, workspaceContext]);
+
+  const mobileMetadataSource = useMemo(() => {
+    if (!canonicalManifestLoaded || !canonicalManifest) return metadata;
+    return {
+      ...(metadata ?? {}),
+      screens: canonicalManifest.screens,
+      editor: canonicalManifest.editor,
+      selectedScreenId: canonicalManifest.selectedScreenId ?? null,
+    } as ProjectMetadata['mobileEditor'];
+  }, [canonicalManifest, canonicalManifestLoaded, metadata]);
+
   const reconciledScreens = useMemo(
-    () => reconcileMobileScreenRecords(metadata?.screens ?? [], availableNames),
-    [availableNames, metadata?.screens],
+    () => reconcileMobileScreenRecords(mobileMetadataSource?.screens ?? [], availableNames),
+    [availableNames, mobileMetadataSource?.screens],
   );
   const [localScreens, setLocalScreens] = useState<MobileScreenRecord[] | null>(null);
   const screens = localScreens ?? reconciledScreens;
-  const [editor, setEditor] = useState(metadata?.editor ?? DEFAULT_EDITOR);
+  const [editor, setEditor] = useState(mobileMetadataSource?.editor ?? DEFAULT_EDITOR);
   const [internalSelectedScreenId, setInternalSelectedScreenId] = useState<string | null>(
-    metadata?.selectedScreenId ?? null,
+    mobileMetadataSource?.selectedScreenId ?? null,
   );
   const effectiveSelectedScreenId = selectedScreenId ?? internalSelectedScreenId;
   const [sources, setSources] = useState<Record<string, string>>({});
@@ -377,6 +421,7 @@ export function MobileCanvasEditor({
   const suppressNextScreenClickRef = useRef(false);
   const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const lastManifestFileSignatureRef = useRef<string | null>(null);
+  const manifestPersistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const canvasShellRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
@@ -408,40 +453,64 @@ export function MobileCanvasEditor({
     nextSelected = effectiveSelectedScreenId ?? null,
     nextEditor = editorRef.current,
   ) => {
-    const next = manifestFor(metadata, nextScreens, nextSelected, nextEditor);
+    const next = manifestFor(mobileMetadataSource, nextScreens, nextSelected, nextEditor);
     setLocalScreens(nextScreens);
     lastPersistedSignatureRef.current = screenSignature(next);
-    void onManifestChange?.(next);
-    if (!viewerOnly) {
-      lastManifestFileSignatureRef.current = JSON.stringify({ screens: next.screens, selectedScreenId: next.selectedScreenId ?? null });
-      void writeProjectTextFile(
-        projectId,
-        MOBILE_MANIFEST_FILE,
-        manifestDocument(projectId, next),
-        { versionSource: 'manual' },
-        workspaceContext,
-      );
-    }
-  }, [effectiveSelectedScreenId, metadata, onManifestChange, projectId, viewerOnly, workspaceContext]);
+
+    const fileSignature = JSON.stringify({
+      screens: next.screens,
+      selectedScreenId: next.selectedScreenId ?? null,
+    });
+    if (!viewerOnly) lastManifestFileSignatureRef.current = fileSignature;
+
+    const write = async () => {
+      try {
+        await onManifestChange?.(next);
+        if (!viewerOnly) {
+          const written = await writeProjectTextFile(
+            projectId,
+            MOBILE_MANIFEST_FILE,
+            manifestDocument(projectId, next),
+            { versionSource: 'manual' },
+            workspaceContext,
+          );
+          if (!written) throw new Error('Could not persist the mobile manifest.');
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not persist the mobile manifest.');
+      }
+    };
+
+    manifestPersistQueueRef.current = manifestPersistQueueRef.current
+      .catch(() => {})
+      .then(write);
+  }, [
+    effectiveSelectedScreenId,
+    mobileMetadataSource,
+    onManifestChange,
+    projectId,
+    viewerOnly,
+    workspaceContext,
+  ]);
 
   useEffect(() => {
-    const incoming = metadata?.editor ?? DEFAULT_EDITOR;
+    const incoming = mobileMetadataSource?.editor ?? DEFAULT_EDITOR;
     setEditor((current) => {
       if (current.x === incoming.x && current.y === incoming.y && current.zoom === incoming.zoom) return current;
       editorRef.current = incoming;
       return incoming;
     });
-  }, [metadata?.editor]);
+  }, [mobileMetadataSource?.editor]);
 
   useEffect(() => {
     if (selectedScreenId !== undefined) return;
     setInternalSelectedScreenId((current) => {
       if (current && screens.some((screen) => screen.id === current)) return current;
-      return metadata?.selectedScreenId && screens.some((screen) => screen.id === metadata.selectedScreenId)
-        ? metadata.selectedScreenId
+      return mobileMetadataSource?.selectedScreenId && screens.some((screen) => screen.id === mobileMetadataSource.selectedScreenId)
+        ? mobileMetadataSource.selectedScreenId
         : screens[0]?.id ?? null;
     });
-  }, [metadata?.selectedScreenId, screens, selectedScreenId]);
+  }, [mobileMetadataSource?.selectedScreenId, screens, selectedScreenId]);
 
   useEffect(() => {
     const viewport = canvasViewportRef.current;
@@ -474,10 +543,10 @@ export function MobileCanvasEditor({
     if (!onManifestChange || htmlFiles.length === 0) return;
     const nextSelected = effectiveSelectedScreenId && screens.some((screen) => screen.id === effectiveSelectedScreenId)
       ? effectiveSelectedScreenId
-      : metadata?.selectedScreenId && screens.some((screen) => screen.id === metadata.selectedScreenId)
-        ? metadata.selectedScreenId
+      : mobileMetadataSource?.selectedScreenId && screens.some((screen) => screen.id === mobileMetadataSource.selectedScreenId)
+        ? mobileMetadataSource.selectedScreenId
         : screens[0]?.id ?? null;
-    const next = manifestFor(metadata, screens, nextSelected, editorRef.current);
+    const next = manifestFor(mobileMetadataSource, screens, nextSelected, editorRef.current);
     const signature = screenSignature(next);
     if (signature === lastPersistedSignatureRef.current) return;
     lastPersistedSignatureRef.current = signature;
@@ -493,7 +562,7 @@ export function MobileCanvasEditor({
         workspaceContext,
       );
     }
-  }, [effectiveSelectedScreenId, htmlFiles.length, metadata, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, htmlFiles.length, mobileMetadataSource, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
 
   useEffect(() => {
     if (bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;
@@ -569,16 +638,12 @@ export function MobileCanvasEditor({
     onSelectScreen?.(screen);
     let nextEditor = editorRef.current;
     if (screen && focus) {
-      nextEditor = {
-        ...editorRef.current,
-        x: Math.max(24, 420 - screen.x * editorRef.current.zoom),
-        y: Math.max(24, 220 - screen.y * editorRef.current.zoom),
-      };
+      nextEditor = editorFocusedOnScreen(screen, editorRef.current);
       editorRef.current = nextEditor;
       setEditor(nextEditor);
     }
-    if (persistChange) persist(screens, screen?.id ?? null, nextEditor);
-  }, [onSelectScreen, persist, screens, selectedScreenId]);
+    if (persistChange && !viewerOnly) persist(screens, screen?.id ?? null, nextEditor);
+  }, [onSelectScreen, persist, screens, selectedScreenId, viewerOnly]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -621,7 +686,16 @@ export function MobileCanvasEditor({
     setError(null);
     const created = await writeProjectTextFile(projectId, file, defaultScreenHtml(name), { versionSource: 'manual' }, workspaceContext);
     if (!created) setError('Could not create that screen.');
-    else { persist([...screens, record], record.id); selectScreen(record); await onRefreshFiles?.(); }
+    else {
+      const nextScreens = [...screens, record];
+      const nextEditor = editorFocusedOnScreen(record, editorRef.current);
+      editorRef.current = nextEditor;
+      setEditor(nextEditor);
+      if (selectedScreenId === undefined) setInternalSelectedScreenId(record.id);
+      onSelectScreen?.(record);
+      persist(nextScreens, record.id, nextEditor);
+      await onRefreshFiles?.();
+    }
     setBusy(null);
   }, [files, onRefreshFiles, persist, projectId, screens, selectScreen, viewerOnly, workspaceContext]);
 
@@ -661,8 +735,13 @@ export function MobileCanvasEditor({
     else {
       const timestamp = now();
       const record = { ...selected, id: stableId(), file, name, order: screens.length, ...position, createdAt: timestamp, updatedAt: timestamp };
-      persist([...screens, record], record.id);
-      selectScreen(record);
+      const nextScreens = [...screens, record];
+      const nextEditor = editorFocusedOnScreen(record, editorRef.current);
+      editorRef.current = nextEditor;
+      setEditor(nextEditor);
+      if (selectedScreenId === undefined) setInternalSelectedScreenId(record.id);
+      onSelectScreen?.(record);
+      persist(nextScreens, record.id, nextEditor);
       await onRefreshFiles?.();
     }
     setBusy(null);
@@ -678,8 +757,12 @@ export function MobileCanvasEditor({
     else {
       const next = screens.filter((screen) => screen.id !== selected.id).map((screen, index) => ({ ...screen, order: index }));
       const nextSelected = next[0] ?? null;
-      persist(next, nextSelected?.id ?? null);
-      selectScreen(nextSelected);
+      const nextEditor = editorFocusedOnScreen(nextSelected, editorRef.current);
+      editorRef.current = nextEditor;
+      setEditor(nextEditor);
+      if (selectedScreenId === undefined) setInternalSelectedScreenId(nextSelected?.id ?? null);
+      onSelectScreen?.(nextSelected);
+      persist(next, nextSelected?.id ?? null, nextEditor);
       await onRefreshFiles?.();
     }
     setBusy(null);
@@ -755,7 +838,13 @@ export function MobileCanvasEditor({
     if (!current || viewerOnly) return;
     const nextCurrent = { ...current, ...patch, updatedAt: now() };
     const otherScreens = screens.filter((screen) => screen.id !== current.id);
-    const placement = findAvailableMobileScreenPosition(nextCurrent, otherScreens);
+    const positionStillValid =
+      nextCurrent.x >= 0 &&
+      nextCurrent.y >= 0 &&
+      !otherScreens.some((screen) => mobileScreenRecordsOverlap(nextCurrent, screen));
+    const placement = positionStillValid
+      ? { x: nextCurrent.x, y: nextCurrent.y }
+      : findAvailableMobileScreenPosition(nextCurrent, otherScreens);
     persist(
       screens.map((screen) => screen.id === current.id ? { ...nextCurrent, ...placement } : screen),
       current.id,

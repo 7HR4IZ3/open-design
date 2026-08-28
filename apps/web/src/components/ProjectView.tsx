@@ -2626,6 +2626,7 @@ export function ProjectView({
         }
       })
       .catch(() => {});
+    return mobileManifestWriteQueueRef.current;
   }, [onProjectChange, project.id, projectRunWorkspaceContext]);
   const [browserOpenRequest, setBrowserOpenRequest] = useState<BrowserOpenRequest | null>(null);
   // Like `openRequest`, but additionally asks the preview workspace to open the

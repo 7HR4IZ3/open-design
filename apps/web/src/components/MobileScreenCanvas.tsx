@@ -190,7 +190,7 @@ export function MobileScreenCanvas({
         ? persistedId
         : screens[0]?.id ?? null;
     setActiveScreenId(nextId);
-  }, [projectId, screens]);
+  }, [manifest, projectId, screens]);
 
   useEffect(() => {
     // Keep the active screen as the sole implicit workspace context. Listing

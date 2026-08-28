@@ -481,9 +481,11 @@ export function MobileCanvasEditor({
       }
     };
 
-    manifestPersistQueueRef.current = manifestPersistQueueRef.current
+    const queuedWrite = manifestPersistQueueRef.current
       .catch(() => {})
       .then(write);
+    manifestPersistQueueRef.current = queuedWrite;
+    return queuedWrite;
   }, [
     effectiveSelectedScreenId,
     mobileMetadataSource,
@@ -684,20 +686,26 @@ export function MobileCanvasEditor({
     };
     setBusy('create');
     setError(null);
-    const created = await writeProjectTextFile(projectId, file, defaultScreenHtml(name), { versionSource: 'manual' }, workspaceContext);
-    if (!created) setError('Could not create that screen.');
-    else {
+    try {
+      const created = await writeProjectTextFile(projectId, file, defaultScreenHtml(name), { versionSource: 'manual' }, workspaceContext);
+      if (!created) {
+        setError('Could not create that screen.');
+        return;
+      }
       const nextScreens = [...screens, record];
       const nextEditor = editorFocusedOnScreen(record, editorRef.current);
       editorRef.current = nextEditor;
       setEditor(nextEditor);
       if (selectedScreenId === undefined) setInternalSelectedScreenId(record.id);
       onSelectScreen?.(record);
-      persist(nextScreens, record.id, nextEditor);
+      await persist(nextScreens, record.id, nextEditor);
       await onRefreshFiles?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create that screen.');
+    } finally {
+      setBusy(null);
     }
-    setBusy(null);
-  }, [files, onRefreshFiles, persist, projectId, screens, selectScreen, viewerOnly, workspaceContext]);
+  }, [files, onRefreshFiles, onSelectScreen, persist, projectId, screens, selectedScreenId, viewerOnly, workspaceContext]);
 
   const renameScreen = useCallback(async () => {
     const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId);
@@ -729,10 +737,13 @@ export function MobileCanvasEditor({
     for (let suffix = 2; existingFiles.has(file); suffix += 1) file = `${fileBase}-${suffix}.html`;
     const position = findAvailableMobileScreenPosition(selected, screens);
     setBusy('duplicate');
-    const html = sources[selected.id] ?? await fetchProjectFileText(projectId, selected.file, { workspaceContext });
-    const created = html == null ? null : await writeProjectTextFile(projectId, file, html, { versionSource: 'manual' }, workspaceContext);
-    if (!created) setError('Could not duplicate that screen.');
-    else {
+    try {
+      const html = sources[selected.id] ?? await fetchProjectFileText(projectId, selected.file, { workspaceContext });
+      const created = html == null ? null : await writeProjectTextFile(projectId, file, html, { versionSource: 'manual' }, workspaceContext);
+      if (!created) {
+        setError('Could not duplicate that screen.');
+        return;
+      }
       const timestamp = now();
       const record = { ...selected, id: stableId(), file, name, order: screens.length, ...position, createdAt: timestamp, updatedAt: timestamp };
       const nextScreens = [...screens, record];
@@ -741,20 +752,26 @@ export function MobileCanvasEditor({
       setEditor(nextEditor);
       if (selectedScreenId === undefined) setInternalSelectedScreenId(record.id);
       onSelectScreen?.(record);
-      persist(nextScreens, record.id, nextEditor);
+      await persist(nextScreens, record.id, nextEditor);
       await onRefreshFiles?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not duplicate that screen.');
+    } finally {
+      setBusy(null);
     }
-    setBusy(null);
-  }, [effectiveSelectedScreenId, files, onRefreshFiles, persist, projectId, screens, selectScreen, sources, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, files, onRefreshFiles, onSelectScreen, persist, projectId, screens, selectedScreenId, sources, viewerOnly, workspaceContext]);
 
   const deleteScreen = useCallback(async () => {
     const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId);
     if (!selected || viewerOnly || screens.length <= 1) return;
     if (!window.confirm(`Delete “${selected.name}” and remove its HTML file from this project?`)) return;
     setBusy('delete');
-    const deleted = await deleteProjectFile(projectId, selected.file, workspaceContext);
-    if (!deleted) setError('Could not delete that screen.');
-    else {
+    try {
+      const deleted = await deleteProjectFile(projectId, selected.file, workspaceContext);
+      if (!deleted) {
+        setError('Could not delete that screen.');
+        return;
+      }
       const next = screens.filter((screen) => screen.id !== selected.id).map((screen, index) => ({ ...screen, order: index }));
       const nextSelected = next[0] ?? null;
       const nextEditor = editorFocusedOnScreen(nextSelected, editorRef.current);
@@ -762,11 +779,14 @@ export function MobileCanvasEditor({
       setEditor(nextEditor);
       if (selectedScreenId === undefined) setInternalSelectedScreenId(nextSelected?.id ?? null);
       onSelectScreen?.(nextSelected);
-      persist(next, nextSelected?.id ?? null, nextEditor);
+      await persist(next, nextSelected?.id ?? null, nextEditor);
       await onRefreshFiles?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete that screen.');
+    } finally {
+      setBusy(null);
     }
-    setBusy(null);
-  }, [effectiveSelectedScreenId, onRefreshFiles, persist, projectId, screens, selectScreen, viewerOnly, workspaceContext]);
+  }, [effectiveSelectedScreenId, onRefreshFiles, onSelectScreen, persist, projectId, screens, selectedScreenId, viewerOnly, workspaceContext]);
 
   const reorder = useCallback((direction: -1 | 1) => {
     if (viewerOnly) return;

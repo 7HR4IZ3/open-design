@@ -9,6 +9,7 @@ import {
 } from '@open-design/contracts';
 
 import { MobileCanvasEditor } from '../../src/components/MobileCanvasEditor';
+import { fetchProjectFileText } from '../../src/providers/registry';
 import type { ProjectFile } from '../../src/types';
 
 vi.mock('../../src/providers/registry', async () => {
@@ -20,6 +21,45 @@ vi.mock('../../src/providers/registry', async () => {
     fetchProjectFileText: vi.fn().mockResolvedValue('<html><body><h1>Home</h1></body></html>'),
     writeProjectTextFile: vi.fn().mockResolvedValue({ name: 'manifest.json' }),
   };
+
+  it('hydrates screen selection and editor state from the canonical manifest file', async () => {
+    vi.mocked(fetchProjectFileText).mockImplementation(async (_projectId, name) => (
+      name === MOBILE_MANIFEST_FILE
+        ? JSON.stringify({
+            schema: 'open-design.mobile-manifest.v1',
+            projectId: 'project-mobile-canonical',
+            screens: [{
+              ...metadata.screens[0],
+              id: 'detail',
+              file: 'screens/detail.html',
+              name: 'Detail',
+            }],
+            editor: { x: 72, y: 80, zoom: 0.66 },
+            selectedScreenId: 'detail',
+            updatedAt: 2,
+          })
+        : '<html><body><h1>Detail</h1></body></html>'
+    ));
+
+    render(
+      <MobileCanvasEditor
+        projectId="project-mobile-canonical"
+        files={[file, { ...file, name: 'screens/detail.html', path: 'screens/detail.html' }]}
+        metadata={metadata}
+      />,
+    );
+
+    const detailButton = await screen.findByRole('button', {
+      name: /Detail\s+screens\/detail\.html/,
+    });
+    expect(detailButton).toHaveClass('selected');
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('mobile-canvas-editor').querySelector('[data-screen-id="detail"]'),
+      ).toHaveClass('selected');
+    });
+  });
 });
 
 vi.mock('../../src/runtime/srcdoc', () => ({

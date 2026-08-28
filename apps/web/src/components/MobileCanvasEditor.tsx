@@ -1056,6 +1056,7 @@ export function MobileCanvasEditor({
                     key={screen.id}
                     className={`mobile-device-frame mobile-device-frame--${screen.deviceFrame}${selected?.id === screen.id ? ' selected' : ''}`}
                     data-device-frame={screen.deviceFrame}
+                    data-screen-id={screen.id}
                     style={{ left: dragPositions[screen.id]?.x ?? screen.x, top: dragPositions[screen.id]?.y ?? screen.y, width: screen.width + 24 }}
                     onClick={() => {
                       if (suppressNextScreenClickRef.current) {

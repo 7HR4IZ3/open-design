@@ -4352,6 +4352,7 @@ export function FileWorkspace({
             files={visibleFiles}
             metadata={mobileEditorMetadata}
             workspaceContext={workspaceContext}
+            filesReady={(filesGeneration ?? 0) > 0 || visibleFiles.length > 0}
             viewerOnly={viewerOnly}
             onSelectScreen={setMobileEditorSelectedScreen}
             onManifestChange={onMobileEditorManifestChange}

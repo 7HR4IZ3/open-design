@@ -2380,10 +2380,22 @@ export function ChatPane({
       frame = null;
       const rect = slot.getBoundingClientRect();
       setComposerPortalRect((prev) => {
+        const viewport = window.visualViewport;
+        const visualViewportBottom = viewport
+          ? viewport.offsetTop + viewport.height
+          : window.innerHeight;
+        const keyboardInset = Math.max(0, window.innerHeight - visualViewportBottom);
         const next = {
           left: Math.round(rect.left),
           width: Math.round(rect.width),
-          bottom: Math.max(0, Math.round(window.innerHeight - rect.bottom)),
+          // On iOS the layout viewport stays tall while the visual viewport
+          // moves above the keyboard. Keep the fixed composer above that
+          // inset instead of leaving it behind the keyboard or scrolling the
+          // whole chat page to reveal it.
+          bottom: Math.max(
+            keyboardInset,
+            Math.round(window.innerHeight - rect.bottom),
+          ),
         };
         if (
           prev
@@ -2411,12 +2423,14 @@ export function ChatPane({
     if (pane) resizeObserver?.observe(pane);
     window.addEventListener('resize', scheduleUpdate);
     window.visualViewport?.addEventListener('resize', scheduleUpdate);
+    window.visualViewport?.addEventListener('scroll', scheduleUpdate);
 
     return () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleUpdate);
       window.visualViewport?.removeEventListener('resize', scheduleUpdate);
+      window.visualViewport?.removeEventListener('scroll', scheduleUpdate);
     };
   }, [tab]);
 

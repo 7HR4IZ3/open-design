@@ -357,6 +357,7 @@ export function MobileCanvasEditor({
   const [loadingSources, setLoadingSources] = useState(true);
   const [flowPreviewId, setFlowPreviewId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -384,6 +385,15 @@ export function MobileCanvasEditor({
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const editorRef = useRef(editor);
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [actionsOpen]);
 
   useEffect(() => {
     setLocalScreens(null);
@@ -843,17 +853,20 @@ export function MobileCanvasEditor({
           <span className="mobile-editor-icon"><Icon name="smartphone" size={16} /></span>
           <div><strong>Mobile screens</strong><span>{screens.length} of {MOBILE_MAX_SCREENS} · {MOBILE_MANIFEST_SCHEMA}</span></div>
         </div>
-        <div className="mobile-editor-actions">
-          <input ref={importInputRef} className="mobile-import-input" type="file" multiple accept=".html,.htm,.png,.jpg,.jpeg,.webp,.svg,.fig" onChange={(event) => void importFiles(event)} />
-          <button type="button" className="mobile-editor-button subtle" onClick={() => importInputRef.current?.click()} disabled={viewerOnly || busy !== null} aria-label="Import files" title="Import files"><Icon name="import" size={14} /><span className="mobile-editor-action-label">Import</span></button>
-          <button type="button" className="mobile-editor-button subtle" onClick={onOpenSourceFiles} disabled={!onOpenSourceFiles} aria-label="Open source files" title="Open source files"><Icon name="file-code" size={14} /><span className="mobile-editor-action-label">Source files</span></button>
-          <button type="button" className="mobile-editor-button subtle" onClick={() => setFlowPreviewId(flowScreen?.id ?? null)} disabled={!flowScreen} aria-label="Preview flow" title="Preview flow"><Icon name="play" size={14} /><span className="mobile-editor-action-label">Preview flow</span></button>
-          <button type="button" className="mobile-editor-button subtle" onClick={() => selected && onOpenFile?.(selected.file)} disabled={!selected || !onOpenFile} aria-label="Open as design file" title="Open as design file"><Icon name="edit" size={14} /><span className="mobile-editor-action-label">Open design file</span></button>
-          <div className="mobile-export-control">
-            <button type="button" className="mobile-editor-button subtle" onClick={() => setExportOpen((open) => !open)} disabled={exportBusy !== null} aria-label="Export mobile prototype" title="Export mobile prototype"><Icon name="download" size={14} /><span className="mobile-editor-action-label">Export</span><Icon name="chevron-down" size={12} /></button>
-            {exportOpen ? <div className="mobile-export-menu" role="menu"><button type="button" role="menuitem" onClick={() => void exportHtmlScreens()}><Icon name="file-code" size={13} /> HTML screens (.zip)</button><button type="button" role="menuitem" onClick={() => void exportPngScreens()}><Icon name="image" size={13} /> PNG screens (.zip)</button><button type="button" role="menuitem" onClick={exportSpa}><Icon name="globe" size={13} /> Runnable SPA (.zip)</button></div> : null}
+        <div className="mobile-editor-toolbar-actions">
+          <div className={`mobile-editor-actions${actionsOpen ? ' is-open' : ''}`} role={actionsOpen ? 'menu' : undefined}>
+            <input ref={importInputRef} className="mobile-import-input" type="file" multiple accept=".html,.htm,.png,.jpg,.jpeg,.webp,.svg,.fig" onChange={(event) => void importFiles(event)} />
+            <button type="button" className="mobile-editor-button subtle" onClick={() => importInputRef.current?.click()} disabled={viewerOnly || busy !== null} aria-label="Import files" title="Import files"><Icon name="import" size={14} /><span className="mobile-editor-action-label">Import</span></button>
+            <button type="button" className="mobile-editor-button subtle" onClick={onOpenSourceFiles} disabled={!onOpenSourceFiles} aria-label="Open source files" title="Open source files"><Icon name="file-code" size={14} /><span className="mobile-editor-action-label">Source files</span></button>
+            <button type="button" className="mobile-editor-button subtle" onClick={() => setFlowPreviewId(flowScreen?.id ?? null)} disabled={!flowScreen} aria-label="Preview flow" title="Preview flow"><Icon name="play" size={14} /><span className="mobile-editor-action-label">Preview flow</span></button>
+            <button type="button" className="mobile-editor-button subtle" onClick={() => selected && onOpenFile?.(selected.file)} disabled={!selected || !onOpenFile} aria-label="Open as design file" title="Open as design file"><Icon name="edit" size={14} /><span className="mobile-editor-action-label">Open design file</span></button>
+            <div className="mobile-export-control">
+              <button type="button" className="mobile-editor-button subtle" onClick={() => setExportOpen((open) => !open)} disabled={exportBusy !== null} aria-label="Export mobile prototype" title="Export mobile prototype"><Icon name="download" size={14} /><span className="mobile-editor-action-label">Export</span><Icon name="chevron-down" size={12} /></button>
+              {exportOpen ? <div className="mobile-export-menu" role="menu"><button type="button" role="menuitem" onClick={() => void exportHtmlScreens()}><Icon name="file-code" size={13} /> HTML screens (.zip)</button><button type="button" role="menuitem" onClick={() => void exportPngScreens()}><Icon name="image" size={13} /> PNG screens (.zip)</button><button type="button" role="menuitem" onClick={exportSpa}><Icon name="globe" size={13} /> Runnable SPA (.zip)</button></div> : null}
+            </div>
           </div>
-          <button type="button" className="mobile-editor-button primary" onClick={() => void createScreen()} disabled={viewerOnly || screens.length >= MOBILE_MAX_SCREENS || busy !== null} aria-label="Create new screen" title="Create new screen"><Icon name="plus" size={14} /><span className="mobile-editor-action-label">New screen</span></button>
+          <button type="button" className="mobile-editor-more" onClick={() => setActionsOpen((open) => !open)} aria-haspopup="menu" aria-expanded={actionsOpen} aria-label="More mobile screen actions" title="More actions"><Icon name="more-horizontal" size={17} /></button>
+          <button type="button" className="mobile-editor-button primary mobile-editor-new-screen" onClick={() => void createScreen()} disabled={viewerOnly || screens.length >= MOBILE_MAX_SCREENS || busy !== null} aria-label="Create new screen" title="Create new screen"><Icon name="plus" size={14} /><span className="mobile-editor-action-label">New screen</span></button>
         </div>
       </header>
       {error ? <div className="mobile-editor-error" role="alert">{error}<button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="close" size={13} /></button></div> : null}

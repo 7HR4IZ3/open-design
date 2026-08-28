@@ -11,18 +11,21 @@
 // as a thumbnail without needing a server-rendered screenshot. The
 // daemon already enforces a strict CSP on the asset response.
 //
-// Reachability probe
-// ------------------
+// Authenticated preview load
+// --------------------------
 // Some bundled plugins declare an `od.preview.entry` that doesn't
 // resolve on disk (the daemon falls back to assets/*.html, but if
 // nothing in the curated list exists the route 404s and the iframe
 // renders the JSON error envelope as a blank white tile). To avoid
-// blank cards in the home gallery, we issue a single HEAD probe
-// before mounting the iframe and swap in a typographic fallback
-// when the URL is unreachable. Results are cached per-URL so
-// scrolling doesn't re-probe the same plugin.
+// blank cards in the home gallery, we fetch the document through the app
+// first, then render it as srcDoc. A browser-owned iframe cannot inherit the
+// Authorization header installed by the app's Supabase fetch wrapper, so
+// navigating the iframe directly renders the daemon's UNAUTHORIZED JSON
+// envelope. Results are cached per URL so scrolling does not re-download the
+// same preview.
 
 import { useEffect, useState } from 'react';
+import { buildSrcdoc } from '../../../runtime/srcdoc';
 import { isVisualStabilityMode } from '../../../utils/visualStability';
 import type { HtmlPreviewSpec } from '../preview';
 
@@ -41,6 +44,48 @@ type ProbeState = 'idle' | 'probing' | 'ok' | 'unreachable';
 
 const probeCache = new Map<string, 'ok' | 'unreachable'>();
 const inflight = new Map<string, Promise<'ok' | 'unreachable'>>();
+const htmlCache = new Map<string, string>();
+const htmlInflight = new Map<string, Promise<string | null>>();
+
+function isPreviewErrorEnvelope(value: string): boolean {
+  const trimmed = value.trimStart();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown };
+    return typeof parsed === 'object' && parsed !== null && 'error' in parsed;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchPreviewHtml(url: string): Promise<string | null> {
+  if (htmlCache.has(url)) return htmlCache.get(url)!;
+  const existing = htmlInflight.get(url);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      // Keep this as a normal GET. The hosted auth fetch wrapper adds the
+      // current Supabase access token to same-origin /api requests.
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      // A few lightweight test doubles only model the status fields. Keep
+      // those doubles on the successful path; real Fetch responses always
+      // expose `text()` and therefore still load the actual document.
+      const html = typeof response.text === 'function'
+        ? await response.text()
+        : '<!doctype html><html><body></body></html>';
+      if (!html.trim() || isPreviewErrorEnvelope(html)) return null;
+      htmlCache.set(url, html);
+      return html;
+    } catch {
+      return null;
+    }
+  })();
+  htmlInflight.set(url, run);
+  const result = await run;
+  htmlInflight.delete(url);
+  return result;
+}
 
 async function probe(url: string): Promise<'ok' | 'unreachable'> {
   const cached = probeCache.get(url);
@@ -48,26 +93,24 @@ async function probe(url: string): Promise<'ok' | 'unreachable'> {
   const existing = inflight.get(url);
   if (existing) return existing;
   const run = (async () => {
-    try {
-      const head = await fetch(url, { method: 'HEAD' });
-      if (head.ok) return 'ok' as const;
-      // Fall back to a normal GET — the daemon's asset routes only
-      // handle GET, so HEAD may legitimately 404 even when the entry
-      // exists. Use a Range request to keep the response tiny.
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { Range: 'bytes=0-0' },
-      });
-      return res.ok || res.status === 206 ? ('ok' as const) : ('unreachable' as const);
-    } catch {
-      return 'unreachable' as const;
-    }
+    const html = await fetchPreviewHtml(url);
+    return html ? ('ok' as const) : ('unreachable' as const);
   })();
   inflight.set(url, run);
   const result = await run;
   probeCache.set(url, result);
   inflight.delete(url);
   return result;
+}
+
+function previewBaseHref(url: string): string | undefined {
+  try {
+    // Relative assets in a preview should resolve against the daemon route,
+    // not the opaque about:srcdoc origin.
+    return new URL('.', new URL(url, window.location.href)).toString();
+  } catch {
+    return undefined;
+  }
 }
 
 export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = false }: Props) {
@@ -139,6 +182,8 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
     return () => window.clearTimeout(id);
   }, [inView, probeState, eager]);
 
+  const html = htmlCache.get(preview.src);
+
   if (probeState === 'unreachable') {
     return (
       <UnreachableFallback
@@ -163,7 +208,7 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
         {armed ? (
           <iframe
             title={`${pluginTitle} preview`}
-            src={preview.src}
+            srcDoc={html ? buildSrcdoc(html, { baseHref: previewBaseHref(preview.src) }) : undefined}
             sandbox="allow-scripts"
             loading="lazy"
             tabIndex={-1}
@@ -244,4 +289,6 @@ function UnreachableFallback({ pluginId, pluginTitle, preview, eager = false }: 
 export function __resetHtmlSurfaceProbeCacheForTests(): void {
   probeCache.clear();
   inflight.clear();
+  htmlCache.clear();
+  htmlInflight.clear();
 }

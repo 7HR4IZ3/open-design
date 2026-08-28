@@ -552,19 +552,36 @@ export function MobileCanvasEditor({
     const signature = screenSignature(next);
     if (signature === lastPersistedSignatureRef.current) return;
     lastPersistedSignatureRef.current = signature;
-    void onManifestChange(next);
-    const fileSignature = JSON.stringify({ screens: next.screens, selectedScreenId: next.selectedScreenId ?? null });
-    if (fileSignature !== lastManifestFileSignatureRef.current && !viewerOnly) {
-      lastManifestFileSignatureRef.current = fileSignature;
-      void writeProjectTextFile(
-        projectId,
-        MOBILE_MANIFEST_FILE,
-        manifestDocument(projectId, next),
-        { versionSource: 'manual' },
-        workspaceContext,
-      );
-    }
-  }, [effectiveSelectedScreenId, htmlFiles.length, mobileMetadataSource, onManifestChange, projectId, screens, viewerOnly, workspaceContext]);
+
+    const fileSignature = JSON.stringify({
+      screens: next.screens,
+      selectedScreenId: next.selectedScreenId ?? null,
+    });
+    if (!viewerOnly) lastManifestFileSignatureRef.current = fileSignature;
+
+    const write = async () => {
+      try {
+        await onManifestChange(next);
+        if (!viewerOnly) {
+          const written = await writeProjectTextFile(
+            projectId,
+            MOBILE_MANIFEST_FILE,
+            manifestDocument(projectId, next),
+            { versionSource: 'manual' },
+            workspaceContext,
+          );
+          if (!written) throw new Error('Could not persist the mobile manifest.');
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not persist the mobile manifest.');
+      }
+    };
+
+    const queuedWrite = manifestPersistQueueRef.current
+      .catch(() => {})
+      .then(write);
+    manifestPersistQueueRef.current = queuedWrite;
+  }, [effectiveSelectedScreenId, htmlFiles.length, mobileMetadataSource, onManifestChange, projectId, viewerOnly, workspaceContext]);
 
   useEffect(() => {
     if (bootstrappedProjectRef.current === projectId || htmlFiles.length > 0 || viewerOnly) return;

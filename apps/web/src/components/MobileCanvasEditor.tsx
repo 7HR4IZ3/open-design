@@ -376,7 +376,15 @@ export function MobileCanvasEditor({
     () => files.filter((file) => file.kind === 'html' || /\.html?$/i.test(file.name)),
     [files],
   );
-  const availableNames = useMemo(() => htmlFiles.map((file) => file.name), [htmlFiles]);
+  const availableNames = useMemo(
+    () => htmlFiles
+      // index.html is the runnable launcher, not a screen in the mobile
+      // storyboard. Keeping it in the rail creates a misleading extra screen
+      // and can make the flow preview start on the wrong document.
+      .filter((file) => file.name.toLowerCase() !== 'index.html')
+      .map((file) => file.name),
+    [htmlFiles],
+  );
   const [canonicalManifest, setCanonicalManifest] = useState<MobileManifest | null>(null);
   const [canonicalManifestLoaded, setCanonicalManifestLoaded] = useState(false);
 

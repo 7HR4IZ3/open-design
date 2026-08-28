@@ -737,7 +737,7 @@ export function MobileCanvasEditor({
     try {
       await renameProjectFile(projectId, selected.file, nextFile, workspaceContext);
       const next = screens.map((screen) => screen.id === selected.id ? { ...screen, name, file: nextFile, updatedAt: now() } : screen);
-      persist(next, selected.id);
+      await persist(next, selected.id);
       await onRefreshFiles?.();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not rename that screen.');

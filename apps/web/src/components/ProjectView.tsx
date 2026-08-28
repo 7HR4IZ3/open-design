@@ -2595,7 +2595,14 @@ export function ProjectView({
 
     const pendingMetadata = mobileManifestPendingMetadataRef.current;
     mobileManifestProjectRef.current = pendingMetadata
-      ? { ...project, metadata: pendingMetadata }
+      ? {
+          ...project,
+          metadata: {
+            kind: project.metadata?.kind ?? pendingMetadata.kind ?? 'other',
+            ...project.metadata,
+            mobileEditor: pendingMetadata.mobileEditor,
+          },
+        }
       : project;
   }, [project]);
 

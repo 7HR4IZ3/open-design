@@ -2499,6 +2499,17 @@ export interface ProjectPreviewBaseScope {
   expiresAt: number;
 }
 
+/**
+ * The capability URL for the document itself plus the directory URL used by
+ * srcDoc relative-resource resolution. Browser iframe navigations need the
+ * former because they cannot attach the hosted Supabase bearer header.
+ */
+export interface ProjectPreviewUrlScope {
+  href: string;
+  baseHref: string;
+  expiresAt: number;
+}
+
 // Newer daemons return the authoritative scope expiry. During a rolling
 // desktop/web update the web bundle can briefly run against an older daemon,
 // so retain a conservative refresh horizon instead of rejecting an otherwise
@@ -2512,11 +2523,10 @@ function previewCapabilityHref(pathname: string): string {
   return new URL(pathname, runtimeHref).href;
 }
 
-export async function fetchProjectPreviewBaseHref(
+async function requestProjectPreviewScope(
   projectId: string,
   name: string,
-  _workspaceContext?: WorkspaceCollabContext | null,
-): Promise<ProjectPreviewBaseScope | null> {
+): Promise<{ pathname: string; expiresAt: number } | null> {
   const params = new URLSearchParams({ file: name });
   const requestUrl =
     `/api/projects/${encodeURIComponent(projectId)}/preview-url?${params.toString()}`;
@@ -2535,17 +2545,52 @@ export async function fetchProjectPreviewBaseHref(
     const expiresAt = typeof body.expiresAt === 'number' && Number.isFinite(body.expiresAt)
       ? body.expiresAt
       : Date.now() + LEGACY_PREVIEW_SCOPE_REFRESH_MS;
-    return {
-      // Electron renders injected HTML from blob:od:// URLs. A root-relative
-      // <base> is ignored in a Blob document, leaving document.baseURI on the
-      // Blob and breaking lazy or script-created relative assets. Resolve the
-      // capability against the host document while it still has a real origin.
-      href: previewCapabilityHref(parsed.pathname.slice(0, directoryEnd)),
-      expiresAt,
-    };
+    return { pathname: parsed.pathname, expiresAt };
   } catch {
     return null;
   }
+}
+
+export async function fetchProjectPreviewBaseHref(
+  projectId: string,
+  name: string,
+  _workspaceContext?: WorkspaceCollabContext | null,
+): Promise<ProjectPreviewBaseScope | null> {
+  const preview = await requestProjectPreviewScope(projectId, name);
+  if (!preview) return null;
+  const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+  const directoryEnd = preview.pathname.lastIndexOf('/') + 1;
+  if (directoryEnd <= expectedPrefix.length) return null;
+  return {
+    // Electron renders injected HTML from blob:od:// URLs. A root-relative
+    // <base> is ignored in a Blob document, leaving document.baseURI on the
+    // Blob and breaking lazy or script-created relative assets. Resolve the
+    // capability against the host document while it still has a real origin.
+    href: previewCapabilityHref(preview.pathname.slice(0, directoryEnd)),
+    expiresAt: preview.expiresAt,
+  };
+}
+
+/**
+ * Mint the exact capability-scoped document URL used by a hosted URL-load
+ * preview. Unlike a normal project raw URL, this path is intentionally safe
+ * for a browser-owned iframe navigation with no Authorization header.
+ */
+export async function fetchProjectPreviewUrl(
+  projectId: string,
+  name: string,
+  _workspaceContext?: WorkspaceCollabContext | null,
+): Promise<ProjectPreviewUrlScope | null> {
+  const preview = await requestProjectPreviewScope(projectId, name);
+  if (!preview) return null;
+  const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+  const directoryEnd = preview.pathname.lastIndexOf('/') + 1;
+  if (directoryEnd <= expectedPrefix.length) return null;
+  return {
+    href: previewCapabilityHref(preview.pathname),
+    baseHref: previewCapabilityHref(preview.pathname.slice(0, directoryEnd)),
+    expiresAt: preview.expiresAt,
+  };
 }
 
 export async function renewProjectPreviewBaseScope(

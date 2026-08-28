@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Button, Input, Select } from '@open-design/components';
+import { hostedAuthRequired } from '../auth/supabase-browser';
 import {
   getLatestHostPreviewNavigationFailure,
   subscribeHostPreviewNavigationFailure,
@@ -120,6 +121,7 @@ import {
   fetchProjectFileVersions,
   fetchProjectFilePreview,
   fetchProjectPreviewBaseHref,
+  fetchProjectPreviewUrl,
   fetchProjectFiles,
   fetchProjectFilePublicPublication,
   fetchProjectFileText,
@@ -422,6 +424,13 @@ const HTML_ROUTING_TEXT_PREVIEW_LIMIT = 96 * 1024;
 const HTML_PREVIEW_ASSET_PREFLIGHT_LIMIT = 32;
 type HtmlSourceLoadMode = 'full' | 'routing-preview';
 type PreviewAssetWarning = { filePath: string };
+
+type UrlLoadedPreviewBaseState = {
+  identity: string;
+  scope: ProjectPreviewBaseScope;
+  /** Exact scoped document URL; absent for legacy daemon-injected scopes. */
+  fileHref?: string;
+};
 
 function isPreviewRuntimeAttributeMap(value: unknown): value is Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -7914,14 +7923,8 @@ function HtmlViewer({
     identity: string;
     href: string;
   } | null>(null);
-  const [urlLoadedPreviewBase, setUrlLoadedPreviewBase] = useState<{
-    identity: string;
-    scope: ProjectPreviewBaseScope;
-  } | null>(null);
-  const urlLoadedPreviewBaseRef = useRef<{
-    identity: string;
-    scope: ProjectPreviewBaseScope;
-  } | null>(null);
+  const [urlLoadedPreviewBase, setUrlLoadedPreviewBase] = useState<UrlLoadedPreviewBaseState | null>(null);
+  const urlLoadedPreviewBaseRef = useRef<UrlLoadedPreviewBaseState | null>(null);
   const [serverPoweredPreviewRequired, setServerPoweredPreviewRequired] = useState(false);
   const [previewAssetWarning, setPreviewAssetWarning] = useState<PreviewAssetWarning | null>(null);
   const [inlinedSource, setInlinedSource] = useState<string | null>(null);
@@ -10257,8 +10260,10 @@ function HtmlViewer({
     [currentSourceIdentity, routingHtmlSource, routingSourceIdentity],
   );
   useEffect(() => {
+    const needsScopedSrcDocPreview =
+      hostedAuthRequired() || workspaceContext?.workspaceType === 'team';
     if (
-      workspaceContext?.workspaceType !== 'team'
+      !needsScopedSrcDocPreview
       ||
       useUrlLoadPreview
       || authoredSrcDocBase !== false
@@ -10268,7 +10273,7 @@ function HtmlViewer({
     ) return;
     let cancelled = false;
     const identity = srcDocPreviewBaseIdentity;
-    void fetchProjectPreviewBaseHref(projectId, file.name).then((scope) => {
+    void fetchProjectPreviewBaseHref(projectId, file.name, workspaceContext).then((scope) => {
       if (cancelled || !scope) return;
       const next = { identity, scope };
       activeSrcDocPreviewBaseRef.current = next;
@@ -10294,6 +10299,50 @@ function HtmlViewer({
     urlLoadedPreviewBase?.identity === urlPreviewBaseIdentity
       ? urlLoadedPreviewBase.scope
       : null;
+  const effectiveUrlLoadedPreviewFileHref =
+    urlLoadedPreviewBase?.identity === urlPreviewBaseIdentity
+      ? urlLoadedPreviewBase.fileHref ?? null
+      : null;
+  useEffect(() => {
+    // A browser-owned iframe navigation cannot carry the Supabase bearer
+    // header. Hosted deployments therefore need the daemon-minted opaque
+    // capability URL before the URL-load transport is allowed to navigate.
+    // Local desktop/dev mode keeps its direct raw URL behavior.
+    if (
+      !hostedAuthRequired()
+      || !workspaceActive
+      || !useUrlLoadPreview
+      || projectResourceReadBlocked
+    ) return;
+    const identity = urlPreviewBaseIdentity;
+    const active = urlLoadedPreviewBaseRef.current;
+    if (active?.identity === identity && active.fileHref) return;
+    let cancelled = false;
+    void fetchProjectPreviewUrl(projectId, file.name, workspaceContext).then((preview) => {
+      if (cancelled || !preview) return;
+      const next: UrlLoadedPreviewBaseState = {
+        identity,
+        scope: {
+          href: preview.baseHref,
+          expiresAt: preview.expiresAt,
+        },
+        fileHref: preview.href,
+      };
+      urlLoadedPreviewBaseRef.current = next;
+      setUrlLoadedPreviewBase(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    file.name,
+    projectId,
+    projectResourceReadBlocked,
+    urlPreviewBaseIdentity,
+    useUrlLoadPreview,
+    workspaceActive,
+    workspaceContext,
+  ]);
   useEffect(() => {
     if (!workspaceActive) return;
     const frame = urlPreviewIframeRef.current;
@@ -10375,7 +10424,16 @@ function HtmlViewer({
       if (renewedExpiresAt !== null) {
         const renewed = { href: scope.href, expiresAt: renewedExpiresAt };
         if (useUrlLoadPreview) {
-          urlLoadedPreviewBaseRef.current = { identity, scope: renewed };
+          const current = urlLoadedPreviewBaseRef.current;
+          const next: UrlLoadedPreviewBaseState = {
+            identity,
+            scope: renewed,
+            ...(current?.identity === identity && current.fileHref
+              ? { fileHref: current.fileHref }
+              : {}),
+          };
+          urlLoadedPreviewBaseRef.current = next;
+          setUrlLoadedPreviewBase(next);
         } else {
           activeSrcDocPreviewBaseRef.current = { identity, scope: renewed };
         }
@@ -10384,21 +10442,38 @@ function HtmlViewer({
       }
 
       // A daemon restart or a suspended browser can invalidate the in-memory
-      // capability. Replace only the live <base>; do not navigate the iframe.
-      const replacement = await fetchProjectPreviewBaseHref(projectId, file.name);
-      if (cancelled) return;
-      if (!replacement) {
-        schedule(scope, true);
-        return;
-      }
+      // capability. Re-mint the transport scope; srcDoc replaces its live
+      // <base>, while URL-load receives a new scoped document URL.
       if (useUrlLoadPreview) {
-        urlLoadedPreviewBaseRef.current = { identity, scope: replacement };
+        const replacement = await fetchProjectPreviewUrl(projectId, file.name, workspaceContext);
+        if (cancelled) return;
+        if (!replacement) {
+          schedule(scope, true);
+          return;
+        }
+        const next: UrlLoadedPreviewBaseState = {
+          identity,
+          scope: {
+            href: replacement.baseHref,
+            expiresAt: replacement.expiresAt,
+          },
+          fileHref: replacement.href,
+        };
+        urlLoadedPreviewBaseRef.current = next;
+        setUrlLoadedPreviewBase(next);
+        schedule(next.scope);
       } else {
+        const replacement = await fetchProjectPreviewBaseHref(projectId, file.name, workspaceContext);
+        if (cancelled) return;
+        if (!replacement) {
+          schedule(scope, true);
+          return;
+        }
         activeSrcDocPreviewBaseRef.current = { identity, scope: replacement };
         setAuxiliarySrcDocPreviewBase({ identity, href: replacement.href });
+        postPreviewBaseUpdate(replacement.href);
+        schedule(replacement);
       }
-      postPreviewBaseUpdate(replacement.href);
-      schedule(replacement);
     };
 
     const active = useUrlLoadPreview
@@ -10423,12 +10498,31 @@ function HtmlViewer({
     urlPreviewBaseIdentity,
     workspaceActive,
   ]);
+  const hostedPreviewRequiresScopedUrl = hostedAuthRequired();
   const basePreviewSrcUrl = useMemo(
-    () => appendResourceQuery(
-      projectRawUrl(projectId, file.name, workspaceContext),
-      `v=${Math.round(file.mtime)}&r=${reloadKey}&${previewBridgeQuery}`,
-    ),
-    [projectId, file.name, file.mtime, previewBridgeQuery, reloadKey, workspaceContext],
+    () => {
+      const rawUrl = projectRawUrl(projectId, file.name, workspaceContext);
+      const needsScopedDocumentUrl = hostedPreviewRequiresScopedUrl && useUrlLoadPreview;
+      const documentUrl = needsScopedDocumentUrl
+        ? effectiveUrlLoadedPreviewFileHref ?? 'about:blank'
+        : rawUrl;
+      if (documentUrl === 'about:blank') return documentUrl;
+      return appendResourceQuery(
+        documentUrl,
+        `v=${Math.round(file.mtime)}&r=${reloadKey}&${previewBridgeQuery}`,
+      );
+    },
+    [
+      effectiveUrlLoadedPreviewFileHref,
+      file.name,
+      file.mtime,
+      hostedPreviewRequiresScopedUrl,
+      previewBridgeQuery,
+      projectId,
+      reloadKey,
+      useUrlLoadPreview,
+      workspaceContext,
+    ],
   );
   const [previewSrcUrl, setPreviewSrcUrl] = useState(basePreviewSrcUrl);
   // Hold the iframe URL still (it carries file.mtime) while the user is mid
@@ -11588,8 +11682,14 @@ function HtmlViewer({
   // Keep that one browsing context warm so Code -> Preview is a visibility
   // swap, just like returning to an already-open file tab.
   const keepUrlTransportWarmInSourceMode = mode === 'source' && urlLoadPreviewSupported;
+  const scopedUrlPreviewPending =
+    hostedPreviewRequiresScopedUrl
+    && useUrlLoadPreview
+    && effectiveUrlLoadedPreviewFileHref === null;
   const urlTransportSrc = projectResourceReadBlocked
     ? 'about:blank'
+    : scopedUrlPreviewPending
+      ? 'about:blank'
     : useUrlLoadPreview || srcDocForcedOnlyByDraw || keepUrlTransportWarmInSourceMode
       ? activePreviewSrcUrl
       : 'about:blank';
@@ -11630,12 +11730,16 @@ function HtmlViewer({
   // painted (per keep-alive key, so tab revisits and pooled re-attaches skip
   // it). about:blank parks (powered probe, srcDoc-active) never arm.
   useEffect(() => {
-    if (!useUrlLoadPreview || urlFrameSrc === 'about:blank') {
+    if (!useUrlLoadPreview) {
       setUrlPreviewFirstLoadPending(false);
       return;
     }
+    if (urlFrameSrc === 'about:blank') {
+      setUrlPreviewFirstLoadPending(scopedUrlPreviewPending);
+      return;
+    }
     setUrlPreviewFirstLoadPending(!urlPreviewLoadedKeysRef.current.has(urlPreviewKeepAliveKey));
-  }, [useUrlLoadPreview, urlFrameSrc, urlPreviewKeepAliveKey]);
+  }, [scopedUrlPreviewPending, useUrlLoadPreview, urlFrameSrc, urlPreviewKeepAliveKey]);
   const activateSrcDocTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
     const activationInputs = {
       srcDoc: srcDocActivationContent,

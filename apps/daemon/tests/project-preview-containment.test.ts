@@ -157,6 +157,15 @@ describe('project preview containment routes', () => {
     expect(csp).not.toContain('allow-same-origin');
     expect(await previewResponse.text()).toContain('<title>Preview</title>');
 
+    const bridgedPreviewResponse = await fetch(
+      `${baseUrl}${body.url}?odPreviewBridge=scroll&odPreviewBridge=selection`,
+      { headers: { Origin: 'null' } },
+    );
+    expect(bridgedPreviewResponse.status).toBe(200);
+    const bridgedPreviewHtml = await bridgedPreviewResponse.text();
+    expect(bridgedPreviewHtml).toContain('data-od-url-scroll-bridge');
+    expect(bridgedPreviewHtml).toContain('data-od-url-selection-bridge');
+
     const scope = body.url.match(/\/preview\/([^/]+)\//u)?.[1];
     expect(scope).toBeTruthy();
     const assetResponse = await fetch(

@@ -15,9 +15,11 @@ import {
   reconcileMobileScreenRecords,
 } from '@open-design/contracts';
 import type { ProjectFile } from '../types';
+import { hostedAuthRequired } from '../auth/supabase-browser';
 import {
   deleteProjectFile,
   fetchProjectFileText,
+  fetchProjectPreviewBaseHref,
   importProjectFigma,
   projectRawUrl,
   renameProjectFile,
@@ -351,6 +353,7 @@ export function MobileCanvasEditor({
   );
   const effectiveSelectedScreenId = selectedScreenId ?? internalSelectedScreenId;
   const [sources, setSources] = useState<Record<string, string>>({});
+  const [previewBaseHrefs, setPreviewBaseHrefs] = useState<Record<string, string>>({});
   const [loadingSources, setLoadingSources] = useState(true);
   const [flowPreviewId, setFlowPreviewId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -515,6 +518,39 @@ export function MobileCanvasEditor({
     return () => { cancelled = true; };
   }, [projectId, screens, workspaceContext]);
 
+  useEffect(() => {
+    // The mobile canvas uses srcDoc documents, so relative stylesheets,
+    // scripts, images, and fonts are fetched by the iframe itself. A hosted
+    // iframe cannot attach the Supabase bearer header; give it the same
+    // capability-scoped directory base used by the main HTML viewer.
+    if (!hostedAuthRequired() || screens.length === 0) {
+      setPreviewBaseHrefs({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(screens.map(async (screen) => {
+      const scope = await fetchProjectPreviewBaseHref(
+        projectId,
+        screen.file,
+        workspaceContext,
+      );
+      return [screen.id, scope?.href ?? null] as const;
+    })).then((entries) => {
+      if (cancelled) return;
+      setPreviewBaseHrefs(Object.fromEntries(
+        entries.filter((entry): entry is [string, string] => entry[1] !== null),
+      ));
+    });
+    return () => { cancelled = true; };
+  }, [projectId, screens, workspaceContext]);
+
+  const previewBaseHrefFor = useCallback((screen: MobileScreenRecord): string | undefined => {
+    if (!hostedAuthRequired()) {
+      return projectRawUrl(projectId, screen.file, workspaceContext);
+    }
+    return previewBaseHrefs[screen.id];
+  }, [previewBaseHrefs, projectId, workspaceContext]);
+
   const selectScreen = useCallback((
     screen: MobileScreenRecord | null,
     { persistChange = true, focus = true } = {},
@@ -652,6 +688,7 @@ export function MobileCanvasEditor({
   const selected = screens.find((screen) => screen.id === effectiveSelectedScreenId) ?? screens[0] ?? null;
   const flowScreen = screens.find((screen) => screen.id === flowPreviewId) ?? screens[0] ?? null;
   const flowHtml = flowScreen ? sources[flowScreen.id] ?? '' : '';
+  const flowPreviewBaseHref = flowScreen ? previewBaseHrefFor(flowScreen) : undefined;
   const zoomLabel = `${Math.round(editor.zoom * 100)}%`;
   const commitEditor = useCallback((nextEditor: MobileEditorMetadata['editor']) => {
     editorRef.current = nextEditor;
@@ -905,7 +942,13 @@ export function MobileCanvasEditor({
             <div className="mobile-canvas-world" style={{ transform: `translate(${editor.x}px, ${editor.y}px) scale(${editor.zoom})` }}>
               {screens.map((screen) => {
                 const html = sources[screen.id] ?? '';
-                const srcDoc = html ? buildSrcdoc(htmlWithMobileRouteBridge(html, screen.id), { baseHref: projectRawUrl(projectId, screen.file, workspaceContext) }) : '';
+                const baseHref = previewBaseHrefFor(screen);
+                const srcDoc = html
+                  ? buildSrcdoc(
+                    htmlWithMobileRouteBridge(html, screen.id),
+                    baseHref ? { baseHref } : undefined,
+                  )
+                  : '';
                 return (
                   <article
                     key={screen.id}
@@ -985,7 +1028,7 @@ export function MobileCanvasEditor({
           <div className="mobile-flow-backdrop" onClick={() => setFlowPreviewId(null)} />
           <div className="mobile-flow-dialog">
             <div className="mobile-flow-header"><div><strong>Flow preview</strong><span>Tap links to move through the experience</span></div><button type="button" onClick={() => setFlowPreviewId(null)} aria-label="Close flow preview"><Icon name="close" size={16} /></button></div>
-            <div key={flowScreen.id} className={`mobile-flow-device transition-${flowScreen.transition ?? 'none'}`}><div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div><div className="mobile-device-screen"><iframe ref={flowFrameRef} title={`${flowScreen.name} flow preview`} sandbox="allow-scripts allow-forms" srcDoc={flowHtml ? buildSrcdoc(htmlWithMobileRouteBridge(flowHtml, flowScreen.id), { baseHref: projectRawUrl(projectId, flowScreen.file, workspaceContext) }) : ''} /></div></div>
+            <div key={flowScreen.id} className={`mobile-flow-device transition-${flowScreen.transition ?? 'none'}`}><div className="mobile-device-chrome"><span>{flowScreen.name}</span><span>simulated device</span></div><div className="mobile-device-screen"><iframe ref={flowFrameRef} title={`${flowScreen.name} flow preview`} sandbox="allow-scripts allow-forms" srcDoc={flowHtml ? buildSrcdoc(htmlWithMobileRouteBridge(flowHtml, flowScreen.id), flowPreviewBaseHref ? { baseHref: flowPreviewBaseHref } : undefined) : ''} /></div></div>
             <div className="mobile-flow-footer"><span>{screens.findIndex((screen) => screen.id === flowScreen.id) + 1} / {screens.length}</span><div>{screens.map((screen) => <button key={screen.id} type="button" className={screen.id === flowScreen.id ? 'active' : ''} onClick={() => { setFlowPreviewId(screen.id); selectScreen(screen); }}>{screen.name}</button>)}</div></div>
           </div>
         </div>

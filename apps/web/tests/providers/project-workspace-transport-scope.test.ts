@@ -25,6 +25,7 @@ import {
   fetchLiveArtifacts,
   fetchProjectFileText,
   fetchProjectPreviewBaseHref,
+  fetchProjectPreviewUrl,
   fetchProjectFileVersion,
   fetchProjectFiles,
   fetchProjectDeployments,
@@ -140,6 +141,29 @@ describe('persisted project Workspace transport scope', () => {
       'brand.html',
       workspaceA,
     )).resolves.toBeNull();
+  });
+
+  it('returns the exact capability URL for a browser-owned preview navigation', async () => {
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    vi.stubGlobal('location', { href: 'od://app/projects/project-1' });
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      url: '/api/projects/project-1/preview/scope-1/pages/brand.html',
+      file: 'pages/brand.html',
+      csp: "default-src 'none'",
+      iframeSandbox: 'allow-scripts allow-forms',
+      opaqueOrigin: true,
+      expiresAt,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchProjectPreviewUrl(
+      'project-1',
+      'pages/brand.html',
+    )).resolves.toEqual({
+      href: 'od://app/api/projects/project-1/preview/scope-1/pages/brand.html',
+      baseHref: 'od://app/api/projects/project-1/preview/scope-1/pages/',
+      expiresAt,
+    });
   });
 
   it('keeps previews working while a new web bundle rolls against an older daemon', async () => {

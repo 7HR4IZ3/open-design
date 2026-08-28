@@ -1474,6 +1474,14 @@ export function projectSplitClassName(workspaceFocused: boolean): string {
   return workspaceFocused ? 'split split-focus' : 'split';
 }
 
+function isCompactViewport(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (typeof window.matchMedia === 'function') {
+    return window.matchMedia('(max-width: 820px)').matches;
+  }
+  return window.innerWidth <= 820;
+}
+
 /**
  * Whether a project open should start with the chat pane collapsed (workspace
  * focus mode). Uses `useProjectCollab`'s confirmed shared-non-owner signal
@@ -2348,7 +2356,11 @@ export function ProjectView({
   const projectFilesRequestSeqRef = useRef(0);
   const [liveArtifacts, setLiveArtifacts] = useState<LiveArtifactSummary[]>([]);
   const [liveArtifactEvents, setLiveArtifactEvents] = useState<LiveArtifactEventItem[]>([]);
-  const [workspaceFocused, setWorkspaceFocused] = useState(false);
+  // A phone has room for one primary surface at a time. Start with the
+  // workspace visible so opening a project does not leave the preview behind
+  // the desktop-sized chat column; the workspace header still exposes the
+  // one-tap control to bring chat back.
+  const [workspaceFocused, setWorkspaceFocused] = useState(isCompactViewport);
   // Read by `renderPreferredChatPanelWidth` instead of closing over
   // `workspaceFocused` directly, so that callback's identity (and therefore
   // the ResizeObserver effect keyed on it, below) doesn't need to depend on
@@ -3041,9 +3053,28 @@ export function ProjectView({
   // once per open, so expanding chat after that is sticky for the visit.
   const sharedNonOwnerChatDefaultAppliedRef = useRef<string | null>(null);
   useEffect(() => {
-    setWorkspaceFocused(false);
+    setWorkspaceFocused(isCompactViewport());
     sharedNonOwnerChatDefaultAppliedRef.current = null;
   }, [project.id]);
+
+  // Keep the single-surface layout in sync with phone rotation. Do not listen
+  // to every resize when matchMedia is available: the iOS keyboard changes
+  // the visual viewport while an input is focused and must not steal the
+  // user's choice to reopen chat.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const query = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 820px)')
+      : null;
+    const sync = () => setWorkspaceFocused(query ? query.matches : isCompactViewport());
+    sync();
+    if (query) {
+      query.addEventListener?.('change', sync);
+      return () => query.removeEventListener?.('change', sync);
+    }
+    window.addEventListener('resize', sync);
+    return () => window.removeEventListener('resize', sync);
+  }, []);
 
   useEffect(() => {
     if (sharedNonOwnerChatDefaultAppliedRef.current === project.id) return;
@@ -3701,6 +3732,7 @@ export function ProjectView({
 
   const requestOpenFile = useCallback((name: string) => {
     if (!name) return;
+    if (isCompactViewport()) setWorkspaceFocused(true);
     setOpenRequest({ name, nonce: Date.now() });
   }, []);
 

@@ -6508,6 +6508,15 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       if (req.headers.origin === 'null') {
         res.header('Access-Control-Allow-Origin', '*');
       }
+      const meta = await resolveProjectFilePath(
+        PROJECTS_DIR,
+        projectId,
+        relPath,
+        project.metadata,
+      );
+      const skipPreviewBridge =
+        /^text\/html(?:;|$)/i.test(meta.mime)
+        && meta.size > PREVIEW_URL_GUARD_MAX_HTML_BYTES;
       await sendProjectFile(
         req,
         res,
@@ -6515,14 +6524,21 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         relPath,
         project.metadata,
         () => setProjectPreviewHeaders(res),
-        async (file) => maybeResolveVitePreviewHtml({
-          file,
-          projectId: project.id,
-          relPath,
-          metadata: project.metadata,
-          projectsRoot: PROJECTS_DIR,
-          readProjectFile,
-        }),
+        skipPreviewBridge ? undefined : async (file) => {
+          const transformed = await maybeResolveVitePreviewHtml({
+            file,
+            projectId: project.id,
+            relPath,
+            metadata: project.metadata,
+            projectsRoot: PROJECTS_DIR,
+            readProjectFile,
+          });
+          return applyUrlPreviewBridgesToHtml(
+            transformed,
+            file.mime,
+            req.query.odPreviewBridge,
+          );
+        },
       );
     } catch (err: any) {
       const status = err && err.code === 'ENOENT' ? 404 : 400;

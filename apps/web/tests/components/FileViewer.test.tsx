@@ -198,6 +198,7 @@ afterEach(() => {
   resetWorkspaceContextCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   analyticsTrackMock.mockReset();
   safetyEventMock.mockReset();
   Reflect.deleteProperty(navigator, 'clipboard');
@@ -2201,6 +2202,62 @@ describe('FileViewer SVG artifacts', () => {
     expect(markup).toContain('data-od-render-mode="srcdoc" data-od-active="false"');
     expect(markup).toContain('src="/api/projects/project-1/raw/page.html?v=1710000000&amp;r=0&amp;odPreviewBridge=scroll&amp;odPreviewBridge=selection&amp;odPreviewBridge=snapshot&amp;odPreviewBridge=observability&amp;odPreviewEpoch=preview-document-');
     expect(markup).toContain('sandbox="allow-scripts allow-downloads"');
+  });
+
+  it('uses a capability-scoped URL for hosted HTML iframe navigations', async () => {
+    vi.stubEnv('NEXT_PUBLIC_OD_HOSTED_AUTH_REQUIRED', '1');
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/projects/project-1/preview-url')) {
+        return new Response(JSON.stringify({
+          url: '/api/projects/project-1/preview/scope-1/page.html',
+          file: 'page.html',
+          csp: "default-src 'none'",
+          iframeSandbox: 'allow-scripts allow-downloads',
+          opaqueOrigin: true,
+          expiresAt,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <FileViewer
+        projectId="project-1"
+        projectKind="prototype"
+        file={baseFile({
+          name: 'page.html',
+          path: 'page.html',
+          mime: 'text/html',
+          kind: 'html',
+          artifactManifest: {
+            version: 1,
+            kind: 'html',
+            title: 'Page',
+            entry: 'page.html',
+            renderer: 'html',
+            exports: ['html'],
+          },
+        })}
+        liveHtml="<html><body>hosted</body></html>"
+      />,
+    );
+
+    const frame = await waitFor(() => {
+      const current = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(current.getAttribute('data-od-render-mode')).toBe('url-load');
+      expect(current.getAttribute('src')).toContain(
+        '/api/projects/project-1/preview/scope-1/page.html?',
+      );
+      expect(current.getAttribute('src')).not.toContain('/raw/');
+      return current;
+    });
+    expect(frame.getAttribute('src')).toContain('odPreviewBridge=scroll');
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).startsWith('/api/projects/project-1/preview-url')
+    ))).toBe(true);
   });
 
   it('does not mint a second preview capability for Workspace URL-load HTML', () => {

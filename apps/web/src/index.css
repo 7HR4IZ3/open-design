@@ -32,3 +32,149 @@
 @import './styles/modal-window-drag.css';
 @import './styles/entrance.css';
 @import './styles/home/plugin-marketplace-demo.css';
+
+/* Mobile browser ergonomics ---------------------------------------
+   Keep these rules last so they can make the existing desktop-density
+   surfaces comfortable on a phone without changing the desktop canvas. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overscroll-behavior-y: none;
+}
+
+@media (max-width: 820px) {
+  /* iOS Safari zooms a page when a text control is smaller than 16px at
+     focus. Keep the visual layout compact through padding and height, but
+     give the browser the 16px control size it needs to stay put. */
+  input:not([type='checkbox']):not([type='color']):not([type='file']):not([type='hidden']):not([type='image']):not([type='radio']):not([type='range']),
+  textarea,
+  select,
+  .composer-input-editor [contenteditable='true'] {
+    font-size: 16px !important;
+  }
+
+  .workspace-shell {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 100svh;
+  }
+
+  .app,
+  .entry-shell {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .workspace-shell {
+    grid-template-rows: calc(44px + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
+  }
+
+  .workspace-tabs-chrome.app-chrome-header {
+    height: calc(44px + env(safe-area-inset-top, 0px));
+    min-height: calc(44px + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .workspace-shell__body,
+  .entry-shell,
+  .app,
+  .split {
+    min-height: 0;
+  }
+
+  .entry-main--scroll,
+  .chat-log,
+  .chat-message-rail__track,
+  .composer-input-editor,
+  .viewer-body,
+  .ds-project-panel,
+  .workspace-tabs-strip,
+  .ws-tabs-bar,
+  .mobile-screen-rail,
+  .mobile-canvas-controls,
+  .mobile-flow-footer > div {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .entry-main--scroll {
+    scroll-padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .viewer-body,
+  .ds-project-panel {
+    scroll-padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* The desktop split reserves a 345px chat column. On a phone that leaves
+     no useful preview area, so the project becomes a one-surface stack. The
+     ProjectView state chooses which surface is visible and the workspace
+     header exposes the toggle to switch between them. */
+  .app .split,
+  .app .split.split-focus {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .app .split > .split-chat-slot,
+  .app .split > .workspace,
+  .app .split.split-focus > .split-chat-slot,
+  .app .split.split-focus > .workspace {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .app .split:not(.split-focus) > .workspace {
+    display: none;
+  }
+
+  .app .split.split-focus > .split-chat-slot {
+    display: none;
+  }
+
+  .app .split > .split-resize-handle {
+    display: none;
+  }
+
+  .app .split .workspace,
+  .app .split.split-focus .workspace {
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .comment-float-host {
+    top: calc(44px + env(safe-area-inset-top, 0px) + 8px);
+    right: max(8px, env(safe-area-inset-right, 0px));
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    left: max(8px, env(safe-area-inset-left, 0px));
+    width: auto;
+    border-radius: var(--radius-lg);
+  }
+}
+
+@media (pointer: coarse) and (max-width: 820px) {
+  /* Give primary controls a reliable touch target while leaving compact
+     status chips and text layout alone. */
+  .app button,
+  .app [role='button'],
+  .entry-shell button,
+  .entry-shell [role='button'] {
+    min-height: 40px;
+  }
+
+  .app input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  .app select,
+  .app textarea,
+  .entry-shell input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  .entry-shell select,
+  .entry-shell textarea {
+    min-height: 40px;
+  }
+}

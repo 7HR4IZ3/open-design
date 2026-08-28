@@ -1340,23 +1340,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         }}
         onDrop={handleDrop}
       >
-        {showPlatformPicker ? (
-          <HomePlatformPicker
-            value={selectedPlatform}
-            disabled={pluginsLoading || pendingChipId !== null || pendingPluginId !== null}
-            onChange={(next) => {
-              trackHomeChatComposerClick(analytics.track, {
-                page_name: 'home',
-                area: 'chat_composer',
-                element: 'platform_selector',
-                platform: next,
-              });
-              onPickPrototypeSubtype?.(
-                next === 'mobile' ? prototypeSubChipForSlug('mobile') : null,
-              );
-            }}
-          />
-        ) : null}
         {showActiveContextRow ? (
           <div
             className="home-hero__active"
@@ -2092,8 +2075,30 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
         </div>
       </div>
 
-      {onDesignSystemChange || onPickWorkingDir ? (
+      {onDesignSystemChange || onPickWorkingDir || showPlatformPicker ? (
         <div className="home-hero__workdir-row">
+          {showPlatformPicker ? (
+            <div className="home-hero__platform-context">
+              <HomePlatformPicker
+                value={selectedPlatform}
+                disabled={pluginsLoading || pendingChipId !== null || pendingPluginId !== null}
+                onChange={(next) => {
+                  trackHomeChatComposerClick(analytics.track, {
+                    page_name: 'home',
+                    area: 'chat_composer',
+                    element: 'platform_selector',
+                    platform: next,
+                  });
+                  onPickPrototypeSubtype?.(
+                    next === 'mobile' ? prototypeSubChipForSlug('mobile') : null,
+                  );
+                }}
+              />
+            </div>
+          ) : null}
+          {showPlatformPicker && (onDesignSystemChange || onPickWorkingDir) ? (
+            <span className="home-hero__workdir-divider" aria-hidden />
+          ) : null}
           {onDesignSystemChange ? (
             <DesignSystemPicker
               variant="home"

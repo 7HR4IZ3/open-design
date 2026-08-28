@@ -6499,7 +6499,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             get: req.get.bind(req),
           }
         : req;
-      if (!await authorizeProjectRequest(
+      // A personal preview scope is already an authorization capability
+      // minted by the authenticated preview-url request. The iframe is
+      // sandboxed and cannot forward the host's Supabase bearer token, so
+      // re-running the normal request auth here turns every personal preview
+      // into an "unauthorized" document. Workspace scopes still re-check
+      // membership through the synthesized authority request above.
+      if (previewWorkspace !== null && !await authorizeProjectRequest(
         authorityRequest,
         res,
         projectId,

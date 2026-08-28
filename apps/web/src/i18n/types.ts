@@ -3848,10 +3848,12 @@ export interface Dict {
   'fileViewer.presentationMeta': string;
   'fileViewer.spreadsheetMeta': string;
   'fileViewer.previewUnavailable': string;
-  'fileViewer.previewLoadFailedTitle': string;
-  'fileViewer.previewLoadFailedDetail': string;
-  'fileViewer.emptyHtmlPreviewTitle': string;
-  'fileViewer.emptyHtmlPreviewDetail': string;
+  // New preview states intentionally remain optional so existing locale bundles
+  // can fall back to English until they receive localized copy.
+  'fileViewer.previewLoadFailedTitle'?: string;
+  'fileViewer.previewLoadFailedDetail'?: string;
+  'fileViewer.emptyHtmlPreviewTitle'?: string;
+  'fileViewer.emptyHtmlPreviewDetail'?: string;
   'fileViewer.download': string;
   'fileViewer.open': string;
   'fileViewer.imageMeta': string;

@@ -8266,8 +8266,28 @@ export async function startServer({
         if (projectId) {
           const project = getProject(db, projectId);
           if (project) {
+            // Agent CLIs write directly to the local project directory. A
+            // response-finish hook alone races the client's immediate file
+            // refresh: the browser can ask Supabase for the old manifest before
+            // the asynchronous mirror has completed. Gate JSON responses on a
+            // single in-flight sync so run completion and other mutations are
+            // durable before the client sees success.
+            let syncPromise: Promise<void> | null = null;
+            const sync = () => {
+              syncPromise ??= syncLocalProjectToDurable(projectId, project.metadata);
+              return syncPromise;
+            };
+            const sendJson = _res.json.bind(_res);
+            _res.json = ((body: unknown) => {
+              void sync()
+                .catch((error) => {
+                  console.error(`[db-postgres] response project sync failed for ${projectId}`, error);
+                })
+                .then(() => sendJson(body));
+              return _res;
+            }) as typeof _res.json;
             _res.once('finish', () => {
-              void syncLocalProjectToDurable(projectId, project.metadata).catch((error) => {
+              void sync().catch((error) => {
                 console.error(`[db-postgres] response project sync failed for ${projectId}`, error);
               });
             });

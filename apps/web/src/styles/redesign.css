@@ -1589,3 +1589,32 @@ hr {
     min-width: 132px;
   }
 }
+/* The existing theme runtime writes these five accent tokens inline on html.
+   Keep that mode switch, but make the redesign accent the final source of
+   truth so selection and primary actions do not drift between surfaces. */
+html[data-theme='light'],
+html:not([data-theme]) {
+  --accent: #2f6b40 !important;
+  --accent-strong: #245631 !important;
+  --accent-hover: #285f38 !important;
+  --accent-soft: #dfeee0 !important;
+  --accent-tint: #edf6ed !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --accent: #92d875 !important;
+    --accent-strong: #b2ed96 !important;
+    --accent-hover: #a5e686 !important;
+    --accent-soft: #29402d !important;
+    --accent-tint: #1e3324 !important;
+  }
+}
+
+html[data-theme='dark'] {
+  --accent: #92d875 !important;
+  --accent-strong: #b2ed96 !important;
+  --accent-hover: #a5e686 !important;
+  --accent-soft: #29402d !important;
+  --accent-tint: #1e3324 !important;
+}
